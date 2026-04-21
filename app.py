@@ -595,8 +595,251 @@ def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_act
         include_lowest=True,
     )
 
+    # Add spend columns for CASE leads (from HubSpot match data)
+    ytd_parts_vals = []
+    ytd_service_vals = []
+    for _, row in df.iterrows():
+        cust = row["cust_upper"]
+        match = _match_hubspot_company(cust, hs_companies)
+        if match:
+            ytd_parts_vals.append(float(match.get("ytd_parts", 0) or 0))
+            ytd_service_vals.append(float(match.get("ytd_service", 0) or 0))
+        else:
+            ytd_parts_vals.append(0.0)
+            ytd_service_vals.append(0.0)
+    df["YTD Parts"] = ytd_parts_vals
+    df["YTD Service"] = ytd_service_vals
+    df["Total Spend"] = df["YTD Parts"] + df["YTD Service"]
+
     df.drop(columns=["cust_upper", "HS Boost"], inplace=True)
     return df
+
+
+def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, existing_customers):
+    """
+    Build lead rows from HubSpot companies that are NOT already in the CASE alerts.
+    These are customers with purchase/service history who could benefit from PM contracts.
+    Score them based on spend, fleet size, deal history, and relationship status.
+    """
+    if not hs_companies:
+        return pd.DataFrame()
+
+    deal_history = deal_history or {}
+    pm_active_companies = pm_active_companies or set()
+
+    # Normalize existing customer names for matching
+    existing_upper = set()
+    for c in existing_customers:
+        existing_upper.add(str(c).strip().upper())
+
+    rows = []
+    for hs_name, data in hs_companies.items():
+        # Skip if already in CASE alerts
+        if hs_name in existing_upper:
+            continue
+        # Skip partial matches too
+        skip = False
+        for ex in existing_upper:
+            if ex and hs_name and (ex in hs_name or hs_name in ex):
+                skip = True
+                break
+        if skip:
+            continue
+
+        # Skip rent-only accounts
+        fleet = data.get("fleet_size", "")
+        if fleet == "0 - Rent Only":
+            continue
+
+        # Skip if already has active PM
+        has_pm = hs_name in pm_active_companies
+
+        # Calculate spend signals
+        ytd_parts = float(data.get("ytd_parts", 0) or 0)
+        ytd_service = float(data.get("ytd_service", 0) or 0)
+        total_spend = ytd_parts + ytd_service
+
+        deal_info = deal_history.get(hs_name, {})
+        deals_won = deal_info.get("won", 0)
+        total_won_amount = deal_info.get("total_won_amount", 0)
+        has_warranty = deal_info.get("has_warranty", False)
+
+        # Determine if this customer has enough signal to be worth showing
+        # Need at least SOME indicator: spend, deals, fleet info, or classification
+        case_class = data.get("case_class", "")
+        prospect_class = data.get("prospect_class", "")
+        account_stage = data.get("account_stage", "")
+        lifecycle = data.get("lifecycle", "")
+        annual_rev = data.get("annual_revenue", "")
+
+        has_signal = (
+            total_spend > 0 or
+            deals_won > 0 or
+            fleet not in ("", "0 - Rent Only") or
+            case_class != "" or
+            has_warranty
+        )
+
+        if not has_signal:
+            continue
+
+        # ── Score this lead (0-100) ──
+        score = 0.0
+
+        # Spend score (biggest weight): parts + service YTD
+        # $50K+ = 100, $20K = 70, $10K = 55, $5K = 40, $1K = 20
+        if total_spend >= 50000:
+            score += 35
+        elif total_spend >= 20000:
+            score += 30
+        elif total_spend >= 10000:
+            score += 25
+        elif total_spend >= 5000:
+            score += 20
+        elif total_spend >= 1000:
+            score += 12
+        elif total_spend > 0:
+            score += 6
+
+        # Parts-only bonus (buying parts but no service = doing their own maintenance)
+        if ytd_parts > 0 and ytd_service == 0:
+            score += 10  # Prime PM conversion target
+
+        # Fleet size score
+        fleet_points = {
+            "1-3": 5, "4-10": 10, "11-25": 18,
+            "26+": 22, "26-50": 22, "51-100": 28,
+            "101-250": 32, "251-500": 35,
+        }
+        score += fleet_points.get(fleet, 0)
+
+        # Deal history: repeat buyers who trust SEC
+        if deals_won >= 10:
+            score += 15
+        elif deals_won >= 5:
+            score += 12
+        elif deals_won >= 2:
+            score += 8
+        elif deals_won >= 1:
+            score += 4
+
+        # Won deal amount (bigger deals = bigger customer)
+        if total_won_amount >= 500000:
+            score += 10
+        elif total_won_amount >= 100000:
+            score += 7
+        elif total_won_amount >= 50000:
+            score += 4
+
+        # CASE classification boost
+        case_boost = CASE_CLASS_BOOST.get(case_class, 0) * 100
+        score += case_boost
+
+        # Warranty customer: natural PM transition
+        if has_warranty:
+            score += 8
+
+        # Recency: recent activity = warmer lead
+        last_purchase = data.get("last_purchase", "")
+        if last_purchase:
+            try:
+                lp_date = datetime.strptime(last_purchase[:10], "%Y-%m-%d")
+                days_ago = (datetime.now() - lp_date).days
+                if days_ago < 90:
+                    score += 8
+                elif days_ago < 180:
+                    score += 5
+                elif days_ago < 365:
+                    score += 3
+            except (ValueError, TypeError):
+                pass
+
+        # Penalty for active PM (they're already covered, just upsell)
+        if has_pm:
+            score -= 20
+
+        score = max(0, min(100, round(score, 1)))
+
+        # Assign lead category
+        ps_engagement = data.get("ps_engagement", "")
+        last_service = data.get("last_service", "")
+        last_parts = data.get("last_parts", "")
+
+        if has_pm:
+            lead_cat = "Active PM (Upsell)"
+        elif has_warranty:
+            lead_cat = "Warranty Customer"
+        elif ps_engagement == "Customer purchases parts from SEC, but mostly manages their own service":
+            lead_cat = "Parts Only, No Service"
+        elif ytd_parts > 0 and ytd_service == 0:
+            lead_cat = "Parts Only, No Service"
+        elif last_parts and last_parts != "No Purchase" and (last_service == "No Purchase" or not last_service):
+            lead_cat = "Parts Only, No Service"
+        elif ps_engagement == "Customer wants SEC to manage Parts and Service for their fleet":
+            lead_cat = "Full Service (Lock In)"
+        elif last_service in ("Hot (0-3 Months)", "Warm (3-6 Months)"):
+            lead_cat = "Active Service Customer"
+        elif last_service in ("Cool (6-12 Months)", "Cold (12-18 Months)"):
+            lead_cat = "Lapsed Service"
+        elif ytd_service > 0:
+            lead_cat = "Active Service Customer"
+        elif deals_won > 0:
+            lead_cat = "Equipment Buyer (No Service)"
+        else:
+            lead_cat = "In CRM (Prospect)"
+
+        # Tier
+        if score >= 65:
+            tier = "Top"
+        elif score >= 50:
+            tier = "High"
+        elif score >= 35:
+            tier = "Medium"
+        else:
+            tier = "Low"
+
+        # Estimate annual PM value based on fleet size
+        fleet_pm_estimate = {
+            "1-3": 4800, "4-10": 16800, "11-25": 43200,
+            "26+": 62400, "26-50": 62400, "51-100": 96000,
+            "101-250": 144000, "251-500": 240000,
+        }
+        est_pm_value = fleet_pm_estimate.get(fleet, 3600)
+
+        rows.append({
+            "Customer": hs_name.title(),
+            "Lead Score": score,
+            "Tier": tier,
+            "Source": "HubSpot",
+            "Location": data.get("city", "") or "",
+            "Model": "",
+            "Category": "",
+            "VIN": "",
+            "Eng Hrs": 0,
+            "Stop": "",
+            "Parts Value": ytd_parts,
+            "Labor Hrs": ytd_service / 150 if ytd_service > 0 else 0,  # rough estimate
+            "Annual PM Value": est_pm_value,
+            "In HubSpot": True,
+            "HubSpot Deals": deals_won,
+            "Lifecycle": lifecycle,
+            "CASE Class": case_class,
+            "Fleet": fleet,
+            "Has PM": has_pm,
+            "Lead Category": lead_cat,
+            "Service Status": last_service,
+            "YTD Parts": ytd_parts,
+            "YTD Service": ytd_service,
+            "Total Spend": total_spend,
+            "has_procare": False,
+            "is_internal": False,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    return df.sort_values("Lead Score", ascending=False)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -756,6 +999,7 @@ def score_leads(alerts_df, procare_vins):
         include_lowest=True,
     )
 
+    df["Source"] = "CASE Alert"
     return df.sort_values("Lead Score", ascending=False)
 
 def aggregate_customer_leads(scored_df):
@@ -764,7 +1008,7 @@ def aggregate_customer_leads(scored_df):
         return pd.DataFrame()
 
     agg_dict = {
-        "machines": ("VIN", "nunique"),
+        "machines": ("VIN", lambda x: x.nunique() if x.notna().any() and (x != "").any() else 0),
         "total_parts_value": ("Parts Value", "sum"),
         "total_labor_hrs": ("Labor Hrs", "sum"),
         "avg_hours": ("Eng Hrs", "mean"),
@@ -772,8 +1016,8 @@ def aggregate_customer_leads(scored_df):
         "max_score": ("Lead Score", "max"),
         "total_annual_pm": ("Annual PM Value", "sum"),
         "location": ("Location", "first"),
-        "models": ("Model", lambda x: ", ".join(sorted(set(x)))),
-        "categories": ("Category", lambda x: ", ".join(sorted(set(x)))),
+        "models": ("Model", lambda x: ", ".join(sorted(set(m for m in x if m))) if any(m for m in x) else ""),
+        "categories": ("Category", lambda x: ", ".join(sorted(set(c for c in x if c))) if any(c for c in x) else ""),
     }
     # Carry through HubSpot fields if present
     if "CASE Class" in scored_df.columns:
@@ -790,14 +1034,23 @@ def aggregate_customer_leads(scored_df):
         agg_dict["lead_category"] = ("Lead Category", "first")
     if "Service Status" in scored_df.columns:
         agg_dict["service_status"] = ("Service Status", "first")
+    if "Source" in scored_df.columns:
+        agg_dict["source"] = ("Source", "first")
+    if "YTD Parts" in scored_df.columns:
+        agg_dict["ytd_parts"] = ("YTD Parts", "first")
+    if "YTD Service" in scored_df.columns:
+        agg_dict["ytd_service"] = ("YTD Service", "first")
+    if "Total Spend" in scored_df.columns:
+        agg_dict["total_spend"] = ("Total Spend", "first")
 
     agg = scored_df.groupby("Customer").agg(**agg_dict).reset_index()
 
     # Customer-level score: weighted by fleet size and total opportunity
+    max_pm = agg["total_annual_pm"].max() if agg["total_annual_pm"].max() > 0 else 1
     agg["Customer Score"] = (
         agg["avg_score"] * 0.5 +
-        (agg["machines"].clip(1, 30) / 30 * 100) * 0.25 +
-        (agg["total_annual_pm"] / agg["total_annual_pm"].max() * 100) * 0.25
+        (agg["machines"].clip(0, 30) / max(30, 1) * 100) * 0.25 +
+        (agg["total_annual_pm"] / max_pm * 100) * 0.25
     ).round(1)
 
     agg["Tier"] = pd.cut(
@@ -1000,7 +1253,7 @@ tab_leads, tab_calc, tab_history, tab_pricing = st.tabs(["Lead Discovery", "PM C
 # ═══════════════════════════════════════════════════════════
 with tab_leads:
     st.subheader("PM Lead Discovery")
-    st.caption("Scores every machine from Case maintenance alerts that does NOT have ProCare coverage. Data auto-loads from the latest files. Upload new files below to refresh.")
+    st.caption("Scores customers from CASE maintenance alerts AND HubSpot CRM to find the best PM opportunities. Customers with spend history, fleet data, and equipment purchases are prioritized.")
 
     # Auto-load bundled data
     alerts_df = load_bundled_alerts()
@@ -1018,164 +1271,216 @@ with tab_leads:
         if procare_file:
             procare_vins = parse_procare_stops(procare_file)
 
+    # Score CASE alert leads
+    scored = pd.DataFrame()
     if alerts_df is not None and not alerts_df.empty:
         scored = score_leads(alerts_df, procare_vins)
 
-        # HubSpot enrichment
-        hs_companies = fetch_hubspot_companies()
-        if hs_companies:
-            deal_history, pm_active = fetch_hubspot_deals()
+    # HubSpot enrichment + HubSpot-only leads
+    hs_companies = fetch_hubspot_companies()
+    deal_history, pm_active = {}, set()
+    hs_only_leads = pd.DataFrame()
+
+    if hs_companies:
+        deal_history, pm_active = fetch_hubspot_deals()
+
+        # Enrich CASE leads with HubSpot data
+        if not scored.empty:
             scored = enrich_leads_with_hubspot(scored, hs_companies, deal_history, pm_active)
 
-        st.session_state.leads_df = scored
-        st.session_state.procare_vins = procare_vins
+        # Build HubSpot-only leads (customers NOT in CASE alerts)
+        existing_customers = set(scored["Customer"].str.strip().str.upper()) if not scored.empty else set()
+        hs_only_leads = build_hubspot_only_leads(hs_companies, deal_history, pm_active, existing_customers)
 
-        if scored.empty:
-            st.warning("No external leads found after filtering out ProCare and internal machines.")
-        else:
-            # Summary metrics
-            cust_agg = aggregate_customer_leads(scored)
+    # Merge both sources
+    if not scored.empty and not hs_only_leads.empty:
+        # Make sure columns align before concat
+        for col in hs_only_leads.columns:
+            if col not in scored.columns:
+                scored[col] = None
+        for col in scored.columns:
+            if col not in hs_only_leads.columns:
+                hs_only_leads[col] = None
+        all_leads = pd.concat([scored, hs_only_leads], ignore_index=True)
+    elif not scored.empty:
+        if "Source" not in scored.columns:
+            scored["Source"] = "CASE Alert"
+        all_leads = scored
+    elif not hs_only_leads.empty:
+        all_leads = hs_only_leads
+    else:
+        all_leads = pd.DataFrame()
 
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
-            with col1:
-                st.metric("Total Machines", len(scored))
-            with col2:
-                st.metric("Unique Customers", scored["Customer"].nunique())
-            with col3:
-                top_count = len(scored[scored["Tier"] == "Top"]) + len(scored[scored["Tier"] == "High"])
-                st.metric("Top + High Leads", top_count)
-            with col4:
-                total_pm_opp = scored["Annual PM Value"].sum()
-                st.metric("Total PM Opportunity", f"${total_pm_opp:,.0f}")
-            with col5:
-                if "In HubSpot" in scored.columns:
-                    hs_count = scored[scored["In HubSpot"]]["Customer"].nunique()
-                    st.metric("In HubSpot", f"{hs_count} customers")
-                else:
-                    st.metric("ProCare Excluded", len(procare_vins))
-            with col6:
-                if "CASE Class" in scored.columns:
-                    attention_count = scored[scored["CASE Class"].isin(["Needs Attention", "At Risk", "Can't Lose Them", "About to Sleep"])]["Customer"].nunique()
-                    st.metric("Need Attention", f"{attention_count} customers")
-                else:
-                    st.metric("Data Files", "Loaded")
+    st.session_state.leads_df = all_leads
+    st.session_state.procare_vins = procare_vins
 
-            st.divider()
+    if all_leads.empty:
+        st.warning("No leads found. Check that data files are loaded or HubSpot is connected.")
+    else:
+        # Summary metrics
+        case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
+        hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
 
-            # Filters
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
-            with col2:
-                filter_location = st.multiselect("Branch", sorted(scored["Location"].unique()))
-            with col3:
-                filter_category = st.multiselect("Machine Category", sorted(scored["Category"].unique()))
-            with col4:
-                min_score = st.slider("Min Lead Score", 0, 100, 50)
-
-            # HubSpot filters if available
-            has_hs = "In HubSpot" in scored.columns
-            if has_hs:
-                fc1, fc2, fc3, fc4 = st.columns(4)
-                with fc1:
-                    lead_cats = sorted([c for c in scored["Lead Category"].unique() if c]) if "Lead Category" in scored.columns else []
-                    filter_lead_cat = st.multiselect("Lead Category", lead_cats) if lead_cats else []
-                with fc2:
-                    hs_filter = st.radio("HubSpot Status", ["All Leads", "In HubSpot Only", "NOT in HubSpot"], horizontal=True)
-                with fc3:
-                    case_classes = sorted([c for c in scored["CASE Class"].unique() if c]) if "CASE Class" in scored.columns else []
-                    filter_case = st.multiselect("CASE Classification", case_classes) if case_classes else []
-                with fc4:
-                    pm_filter = st.radio("PM Status", ["All", "No Active PM", "Has Active PM"], horizontal=True) if "Has PM" in scored.columns else "All"
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        with col1:
+            st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
+        with col2:
+            case_count = case_leads["Customer"].nunique() if not case_leads.empty else 0
+            hs_count = hs_leads["Customer"].nunique() if not hs_leads.empty else 0
+            st.metric("CASE Alerts", f"{case_count}", delta=f"+ {hs_count} HubSpot")
+        with col3:
+            top_high = all_leads[all_leads["Tier"].isin(["Top", "High"])]["Customer"].nunique()
+            st.metric("Top + High", top_high)
+        with col4:
+            total_pm_opp = all_leads.groupby("Customer")["Annual PM Value"].first().sum()
+            st.metric("Total PM Opportunity", f"${total_pm_opp:,.0f}")
+        with col5:
+            if "Total Spend" in all_leads.columns:
+                total_spend = all_leads.groupby("Customer")["Total Spend"].first().sum()
+                st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
+            elif "In HubSpot" in all_leads.columns:
+                in_hs = all_leads[all_leads["In HubSpot"]]["Customer"].nunique()
+                st.metric("In HubSpot", f"{in_hs} customers")
             else:
-                hs_filter = "All Leads"
-                filter_case = []
-                pm_filter = "All"
-                filter_lead_cat = []
+                st.metric("ProCare Excluded", len(procare_vins))
+        with col6:
+            if "CASE Class" in all_leads.columns:
+                attention = all_leads[all_leads["CASE Class"].isin(["Needs Attention", "At Risk", "Can't Lose Them", "About to Sleep"])]["Customer"].nunique()
+                st.metric("Need Attention", f"{attention} customers")
+            else:
+                st.metric("Data Files", "Loaded")
 
-            # Apply filters
-            display = scored.copy()
-            if filter_tier:
-                display = display[display["Tier"].isin(filter_tier)]
-            if filter_location:
-                display = display[display["Location"].isin(filter_location)]
-            if filter_category:
-                display = display[display["Category"].isin(filter_category)]
-            display = display[display["Lead Score"] >= min_score]
-            if hs_filter == "In HubSpot Only" and "In HubSpot" in display.columns:
-                display = display[display["In HubSpot"]]
-            elif hs_filter == "NOT in HubSpot" and "In HubSpot" in display.columns:
-                display = display[~display["In HubSpot"]]
-            if filter_lead_cat and "Lead Category" in display.columns:
-                display = display[display["Lead Category"].isin(filter_lead_cat)]
-            if filter_case and "CASE Class" in display.columns:
-                display = display[display["CASE Class"].isin(filter_case)]
-            if pm_filter == "No Active PM" and "Has PM" in display.columns:
-                display = display[~display["Has PM"]]
-            elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
-                display = display[display["Has PM"]]
+        st.divider()
 
-            # View toggle
-            view = st.radio("View", ["By Customer", "By Machine"], horizontal=True)
+        # Filters row 1
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
+        with col2:
+            source_options = sorted([s for s in all_leads["Source"].unique() if s]) if "Source" in all_leads.columns else []
+            filter_source = st.multiselect("Lead Source", source_options) if source_options else []
+        with col3:
+            locations = sorted([l for l in all_leads["Location"].unique() if l])
+            filter_location = st.multiselect("Branch / City", locations)
+        with col4:
+            min_score = st.slider("Min Lead Score", 0, 100, 50)
 
-            if view == "By Customer":
-                cust_display = aggregate_customer_leads(display)
-                if cust_display.empty:
-                    st.info("No customers match filters.")
-                else:
-                    st.caption(f"Showing {len(cust_display)} customers")
-                    for _, row in cust_display.iterrows():
-                        tier = row["Tier"]
-                        # Build subtitle with HubSpot info
-                        subtitle_parts = [row['location'], row['models']]
-                        if "case_class" in row and row.get("case_class"):
-                            subtitle_parts.insert(0, f"CASE: {row['case_class']}")
-                        if "fleet" in row and row.get("fleet"):
-                            subtitle_parts.insert(1, f"Fleet: {row['fleet']}")
+        # Filters row 2
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        with fc1:
+            lead_cats = sorted([c for c in all_leads["Lead Category"].unique() if c]) if "Lead Category" in all_leads.columns else []
+            filter_lead_cat = st.multiselect("Lead Category", lead_cats) if lead_cats else []
+        with fc2:
+            case_classes = sorted([c for c in all_leads["CASE Class"].unique() if c]) if "CASE Class" in all_leads.columns else []
+            filter_case = st.multiselect("CASE Classification", case_classes) if case_classes else []
+        with fc3:
+            fleet_opts = sorted([f for f in all_leads["Fleet"].unique() if f]) if "Fleet" in all_leads.columns else []
+            filter_fleet = st.multiselect("Fleet Size", fleet_opts) if fleet_opts else []
+        with fc4:
+            pm_filter = st.radio("PM Status", ["No Active PM", "All", "Has Active PM"], horizontal=True) if "Has PM" in all_leads.columns else "All"
 
-                        with st.container():
-                            c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
-                            with c1:
-                                label = f"**{row['Customer']}**"
-                                if "lead_category" in row and row.get("lead_category"):
-                                    label += f"  &nbsp; `{row['lead_category']}`"
-                                st.markdown(label, unsafe_allow_html=True)
-                                st.caption(" | ".join(subtitle_parts))
-                            with c2:
-                                st.metric("Machines", int(row["machines"]))
-                            with c3:
-                                st.metric("PM Value", f"${row['total_annual_pm']:,.0f}")
-                            with c4:
-                                st.metric("Parts Opp", f"${row['total_parts_value']:,.0f}")
-                            with c5:
-                                st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
-                            st.divider()
+        # Apply filters
+        display = all_leads.copy()
+        if filter_tier:
+            display = display[display["Tier"].isin(filter_tier)]
+        if filter_source and "Source" in display.columns:
+            display = display[display["Source"].isin(filter_source)]
+        if filter_location:
+            display = display[display["Location"].isin(filter_location)]
+        display = display[display["Lead Score"] >= min_score]
+        if filter_lead_cat and "Lead Category" in display.columns:
+            display = display[display["Lead Category"].isin(filter_lead_cat)]
+        if filter_case and "CASE Class" in display.columns:
+            display = display[display["CASE Class"].isin(filter_case)]
+        if filter_fleet and "Fleet" in display.columns:
+            display = display[display["Fleet"].isin(filter_fleet)]
+        if pm_filter == "No Active PM" and "Has PM" in display.columns:
+            display = display[~display["Has PM"]]
+        elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
+            display = display[display["Has PM"]]
 
-            else:  # By Machine
-                st.caption(f"Showing {len(display)} machines")
-                show_cols = ["Lead Score", "Tier", "Customer", "Model", "Category", "Location", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value", "VIN"]
-                # Insert HubSpot columns after Customer
-                hs_insert_cols = ["Lead Category", "CASE Class", "Fleet", "In HubSpot", "Has PM"]
-                for i, col in enumerate(hs_insert_cols):
-                    if col in display.columns:
-                        show_cols.insert(3 + i, col)
-                show_cols = [c for c in show_cols if c in display.columns]
-                st.dataframe(
-                    display[show_cols].reset_index(drop=True),
-                    use_container_width=True, hide_index=True,
-                    column_config={
-                        "Lead Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-                        "Parts Value": st.column_config.NumberColumn("Parts $", format="$%.0f"),
-                        "Annual PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
-                        "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
-                        "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
-                        "In HubSpot": st.column_config.CheckboxColumn("In HS", default=False),
-                        "Has PM": st.column_config.CheckboxColumn("Has PM", default=False),
-                        "Lead Category": st.column_config.TextColumn("Lead Category", width="medium"),
-                        "CASE Class": st.column_config.TextColumn("CASE Class", width="small"),
-                        "Fleet": st.column_config.TextColumn("Fleet Size", width="small"),
-                    },
-                )
+        # View toggle
+        view = st.radio("View", ["By Customer", "By Machine/Lead"], horizontal=True)
+
+        if view == "By Customer":
+            cust_display = aggregate_customer_leads(display)
+            if cust_display.empty:
+                st.info("No customers match filters.")
+            else:
+                st.caption(f"Showing {len(cust_display)} customers")
+                for _, row in cust_display.iterrows():
+                    tier = row["Tier"]
+                    source_tag = row.get("source", "")
+
+                    # Build subtitle with context
+                    subtitle_parts = []
+                    if source_tag:
+                        subtitle_parts.append(f"Source: {source_tag}")
+                    if row.get("location"):
+                        subtitle_parts.append(row["location"])
+                    if "case_class" in row and row.get("case_class"):
+                        subtitle_parts.append(f"CASE: {row['case_class']}")
+                    if "fleet" in row and row.get("fleet"):
+                        subtitle_parts.append(f"Fleet: {row['fleet']}")
+                    if row.get("models"):
+                        subtitle_parts.append(row["models"])
+
+                    with st.container():
+                        c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
+                        with c1:
+                            label = f"**{row['Customer']}**"
+                            if "lead_category" in row and row.get("lead_category"):
+                                label += f"  &nbsp; `{row['lead_category']}`"
+                            st.markdown(label, unsafe_allow_html=True)
+                            st.caption(" | ".join(subtitle_parts))
+                        with c2:
+                            machines = int(row["machines"])
+                            if machines > 0:
+                                st.metric("Machines", machines)
+                            elif "fleet" in row and row.get("fleet"):
+                                st.metric("Fleet", row["fleet"])
+                            else:
+                                st.metric("Machines", "N/A")
+                        with c3:
+                            st.metric("PM Value", f"${row['total_annual_pm']:,.0f}")
+                        with c4:
+                            spend_label = "Parts Opp"
+                            spend_val = row["total_parts_value"]
+                            if "total_spend" in row and row.get("total_spend", 0) > 0:
+                                spend_label = "YTD Spend"
+                                spend_val = row["total_spend"]
+                            st.metric(spend_label, f"${spend_val:,.0f}")
+                        with c5:
+                            st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
+                        st.divider()
+
+        else:  # By Machine/Lead
+            st.caption(f"Showing {len(display)} leads")
+            show_cols = ["Lead Score", "Tier", "Source", "Customer", "Lead Category", "CASE Class", "Fleet", "Location"]
+            # Add CASE-specific columns
+            show_cols += ["Model", "Category", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value"]
+            # Add spend columns if present
+            if "Total Spend" in display.columns:
+                show_cols.insert(show_cols.index("Parts Value"), "Total Spend")
+            show_cols += ["Has PM", "VIN"]
+            show_cols = [c for c in show_cols if c in display.columns]
+            st.dataframe(
+                display[show_cols].reset_index(drop=True),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Lead Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
+                    "Parts Value": st.column_config.NumberColumn("Parts $", format="$%.0f"),
+                    "Total Spend": st.column_config.NumberColumn("YTD Spend", format="$%.0f"),
+                    "Annual PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
+                    "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
+                    "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
+                    "Has PM": st.column_config.CheckboxColumn("Has PM", default=False),
+                    "Lead Category": st.column_config.TextColumn("Lead Category", width="medium"),
+                    "CASE Class": st.column_config.TextColumn("CASE Class", width="small"),
+                    "Fleet": st.column_config.TextColumn("Fleet Size", width="small"),
+                    "Source": st.column_config.TextColumn("Source", width="small"),
+                },
+            )
 
             # Export leads
             st.divider()
@@ -1193,7 +1498,7 @@ with tab_leads:
             st.divider()
             import plotly.express as px
 
-            # Lead Category breakdown (if HubSpot connected)
+            # Lead Category breakdown
             if "Lead Category" in display.columns:
                 cat_colors = {
                     "Parts Only, No Service": "#C8102E",
@@ -1204,46 +1509,73 @@ with tab_leads:
                     "No ProCare (In CRM)": "#6B7280",
                     "No ProCare (New Lead)": "#9CA3AF",
                     "Active PM (Upsell)": "#8B5CF6",
+                    "Equipment Buyer (No Service)": "#D97706",
+                    "In CRM (Prospect)": "#94A3B8",
                 }
                 lc_data = display.groupby("Lead Category").agg(
                     customers=("Customer", "nunique"),
-                    machines=("VIN", "nunique"),
                     pm_value=("Annual PM Value", "sum"),
                 ).reset_index().sort_values("pm_value", ascending=True)
                 fig = px.bar(lc_data, x="pm_value", y="Lead Category",
                              orientation="h", title="PM Opportunity by Lead Category",
                              labels={"pm_value": "Annual PM Value ($)", "Lead Category": ""},
-                             hover_data=["customers", "machines"],
+                             hover_data=["customers"],
                              color="Lead Category", color_discrete_map=cat_colors)
-                fig.update_layout(showlegend=False, height=350)
+                fig.update_layout(showlegend=False, height=400)
                 st.plotly_chart(fig, use_container_width=True)
 
+            # Source breakdown
+            if "Source" in display.columns:
+                col1, col2 = st.columns(2)
+                with col1:
+                    src_data = display.groupby("Source").agg(
+                        customers=("Customer", "nunique"),
+                        pm_value=("Annual PM Value", "sum"),
+                    ).reset_index()
+                    fig = px.bar(src_data, x="Source", y="customers",
+                                 title="Leads by Source",
+                                 labels={"customers": "Unique Customers", "Source": ""},
+                                 color="Source", color_discrete_map={"CASE Alert": SEC_RED, "HubSpot": "#2F5496"})
+                    fig.update_layout(showlegend=False, height=350)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    fig = px.bar(src_data, x="Source", y="pm_value",
+                                 title="PM Opportunity by Source",
+                                 labels={"pm_value": "Annual PM Value ($)", "Source": ""},
+                                 color="Source", color_discrete_map={"CASE Alert": SEC_RED, "HubSpot": "#2F5496"})
+                    fig.update_layout(showlegend=False, height=350)
+                    st.plotly_chart(fig, use_container_width=True)
+
+            # Location and Category charts (filter out blanks from HubSpot leads)
             col1, col2 = st.columns(2)
             with col1:
-                loc_data = display.groupby("Location").agg(
-                    machines=("VIN", "nunique"),
-                    pm_value=("Annual PM Value", "sum"),
-                ).reset_index()
-                fig = px.bar(loc_data.sort_values("pm_value", ascending=True), x="pm_value", y="Location",
-                             orientation="h", title="PM Opportunity by Branch",
-                             labels={"pm_value": "Annual PM Value ($)", "Location": ""},
-                             color_discrete_sequence=[SEC_RED])
-                fig.update_layout(showlegend=False, height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                loc_filtered = display[display["Location"].notna() & (display["Location"] != "")]
+                if not loc_filtered.empty:
+                    loc_data = loc_filtered.groupby("Location").agg(
+                        customers=("Customer", "nunique"),
+                        pm_value=("Annual PM Value", "sum"),
+                    ).reset_index()
+                    fig = px.bar(loc_data.sort_values("pm_value", ascending=True), x="pm_value", y="Location",
+                                 orientation="h", title="PM Opportunity by Location",
+                                 labels={"pm_value": "Annual PM Value ($)", "Location": ""},
+                                 color_discrete_sequence=[SEC_RED])
+                    fig.update_layout(showlegend=False, height=400)
+                    st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                cat_data = display.groupby("Category").agg(
-                    machines=("VIN", "nunique"),
-                    pm_value=("Annual PM Value", "sum"),
-                ).reset_index()
-                fig = px.bar(cat_data.sort_values("pm_value", ascending=True), x="pm_value", y="Category",
-                             orientation="h", title="PM Opportunity by Machine Category",
-                             labels={"pm_value": "Annual PM Value ($)", "Category": ""},
-                             color_discrete_sequence=["#2F5496"])
-                fig.update_layout(showlegend=False, height=400)
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("No data files found. Upload maintenance alerts above or add files to the data/ folder in the repo.")
+                cat_filtered = display[display["Category"].notna() & (display["Category"] != "")]
+                if not cat_filtered.empty:
+                    cat_data = cat_filtered.groupby("Category").agg(
+                        customers=("Customer", "nunique"),
+                        pm_value=("Annual PM Value", "sum"),
+                    ).reset_index()
+                    fig = px.bar(cat_data.sort_values("pm_value", ascending=True), x="pm_value", y="Category",
+                                 orientation="h", title="PM Opportunity by Machine Category",
+                                 labels={"pm_value": "Annual PM Value ($)", "Category": ""},
+                                 color_discrete_sequence=["#2F5496"])
+                    fig.update_layout(showlegend=False, height=400)
+                    st.plotly_chart(fig, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════
