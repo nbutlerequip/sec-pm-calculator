@@ -1679,7 +1679,7 @@ with tab_leads:
         case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
         hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
         with col2:
@@ -1689,10 +1689,6 @@ with tab_leads:
             if "Total Spend" in all_leads.columns:
                 total_spend = all_leads.groupby("Customer")["Total Spend"].first().sum()
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
-        with col4:
-            if "CASE Class" in all_leads.columns:
-                attention = all_leads[all_leads["CASE Class"].isin(["Needs Attention", "At Risk", "Can't Lose Them", "About to Sleep"])]["Customer"].nunique()
-                st.metric("Need Attention", f"{attention}")
             else:
                 st.metric("Data Files", "Loaded")
 
