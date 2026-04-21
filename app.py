@@ -1684,8 +1684,7 @@ with tab_leads:
             st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
         with col2:
             case_count = case_leads["Customer"].nunique() if not case_leads.empty else 0
-            hs_count = hs_leads["Customer"].nunique() if not hs_leads.empty else 0
-            st.metric("CASE Alerts", f"{case_count}", delta=f"+ {hs_count} HubSpot")
+            st.metric("CASE Alerts", f"{case_count:,}")
         with col3:
             top_high = all_leads[all_leads["Tier"].isin(["Top", "High"])]["Customer"].nunique()
             st.metric("Top + High", top_high)
