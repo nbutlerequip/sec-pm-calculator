@@ -1759,21 +1759,16 @@ with tab_leads:
         st.divider()
 
         # Filters
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
         with col2:
-            locations = sorted([l for l in all_leads["Location"].unique() if l])
-            filter_location = st.multiselect("Branch / City", locations)
-        with col3:
             pm_filter = st.radio("PM Status", ["No Active PM", "All", "Has Active PM"], horizontal=True) if "Has PM" in all_leads.columns else "All"
 
         # Apply filters
         display = all_leads.copy()
         if filter_tier:
             display = display[display["Tier"].isin(filter_tier)]
-        if filter_location:
-            display = display[display["Location"].isin(filter_location)]
         if pm_filter == "No Active PM" and "Has PM" in display.columns:
             display = display[~display["Has PM"]]
         elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
