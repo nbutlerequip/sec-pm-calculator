@@ -1616,7 +1616,7 @@ with col_head_r:
 # ═══════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════
-tab_leads, tab_calc, tab_history, tab_pricing = st.tabs(["Lead Discovery", "PM Calculator", "Quote History", "Pricing Reference"])
+tab_leads, tab_calc, tab_history = st.tabs(["Lead Discovery", "PM Calculator", "Quote History"])
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1: LEAD DISCOVERY
@@ -1679,31 +1679,20 @@ with tab_leads:
         case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
         hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
 
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
         with col2:
-            case_count = case_leads["Customer"].nunique() if not case_leads.empty else 0
-            st.metric("CASE Alerts", f"{case_count:,}")
-        with col3:
             top_high = all_leads[all_leads["Tier"].isin(["Top", "High"])]["Customer"].nunique()
             st.metric("Top + High", top_high)
-        with col4:
-            total_pm_opp = all_leads.groupby("Customer")["Annual PM Value"].first().sum()
-            st.metric("Total PM Opportunity", f"${total_pm_opp:,.0f}")
-        with col5:
+        with col3:
             if "Total Spend" in all_leads.columns:
                 total_spend = all_leads.groupby("Customer")["Total Spend"].first().sum()
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
-            elif "In HubSpot" in all_leads.columns:
-                in_hs = all_leads[all_leads["In HubSpot"]]["Customer"].nunique()
-                st.metric("In HubSpot", f"{in_hs} customers")
-            else:
-                st.metric("ProCare Excluded", len(procare_vins))
-        with col6:
+        with col4:
             if "CASE Class" in all_leads.columns:
                 attention = all_leads[all_leads["CASE Class"].isin(["Needs Attention", "At Risk", "Can't Lose Them", "About to Sleep"])]["Customer"].nunique()
-                st.metric("Need Attention", f"{attention} customers")
+                st.metric("Need Attention", f"{attention}")
             else:
                 st.metric("Data Files", "Loaded")
 
@@ -2122,27 +2111,3 @@ with tab_history:
 # ═══════════════════════════════════════════════════════════
 # TAB 4: PRICING REFERENCE
 # ═══════════════════════════════════════════════════════════
-with tab_pricing:
-    st.subheader("PM Pricing by Machine Category")
-    st.caption("Base annual pricing at ~1,000 hours/year. Adjusts for actual hours and machine age.")
-
-    rows = []
-    for cat, p in sorted(PM_PRICING.items(), key=lambda x: -x[1]["annual"]):
-        rows.append({"Category": cat, "Annual PM": f"${p['annual']:,}", "Parts (est)": f"${p['parts_avg']:,}", "Labor (est)": f"${p['labor_avg']:,}"})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("Models by Category")
-    for cat in sorted(PM_PRICING.keys()):
-        if cat == "Other":
-            continue
-        makes_in = []
-        for mk, mk_cats in MAKES_MODELS.items():
-            if cat in mk_cats:
-                makes_in.append(f"**{mk}**: {', '.join(mk_cats[cat])}")
-        if makes_in:
-            with st.expander(f"{cat} — ${PM_PRICING[cat]['annual']:,}/yr"):
-                for line in makes_in:
-                    st.markdown(line)
-
-    st.caption("Pricing from SEC service history + PM contract data. Updates coming from Jarred's averages.")
