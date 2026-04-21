@@ -1800,34 +1800,14 @@ with tab_leads:
                         with c2:
                             st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
 
-                        # Row 2: Machines list
+                        # Row 2: Machines
                         cust_machines = display[display["Customer"] == cust_name]
                         if not cust_machines.empty and "Model" in cust_machines.columns:
-                            machine_lines = []
-                            for _, m in cust_machines.iterrows():
-                                model = m.get("Model", "")
-                                cat = m.get("Category", "")
-                                hrs = m.get("Eng Hrs", 0)
-                                pm_val = m.get("Annual PM Value", 0)
-                                parts_val = m.get("Parts Value", 0)
-                                if model or cat:
-                                    line = f"**{model}** ({cat})"
-                                    details = []
-                                    if hrs and hrs > 0:
-                                        details.append(f"{hrs:,.0f} hrs")
-                                    if parts_val and parts_val > 0:
-                                        details.append(f"${parts_val:,.0f} parts")
-                                    if pm_val and pm_val > 0:
-                                        details.append(f"${pm_val:,.0f}/yr PM")
-                                    if details:
-                                        line += f" — {', '.join(details)}"
-                                    machine_lines.append(line)
-                            if machine_lines:
-                                st.markdown("**Machines:**")
-                                for ml in machine_lines:
-                                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{ml}", unsafe_allow_html=True)
+                            models = sorted(set(f"{m}" for m in cust_machines["Model"] if m and str(m).strip()))
+                            if models:
+                                st.markdown(f"**Machines:** {', '.join(models)}")
                         elif "fleet" in row and row.get("fleet"):
-                            st.markdown(f"**Fleet Size:** {row['fleet']}")
+                            st.markdown(f"**Fleet:** {row['fleet']}")
 
                         # Row 3: Spend summary
                         spend_parts = []
