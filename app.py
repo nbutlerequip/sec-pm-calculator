@@ -24,14 +24,22 @@ SEC_RED = "#C8102E"
 SEC_DARK = "#1A1A1A"
 SEC_GRAY = "#4A4A4A"
 
-# ─── Branches ───
-BRANCHES = [
-    "Brunswick", "Burlington", "Cambridge", "Columbus", "Dayton", "Dublin",
-    "Gallipolis", "Heath", "Hebron", "Holt", "Indianapolis", "Louisville",
-    "Mansfield", "Marietta", "Mentor", "Monroe", "Nashville",
-    "North Canton", "Novi", "Painesville", "Perrysburg", "Richfield",
-    "Tri-Cities", "Wooster",
-]
+# ─── Branches (17 locations, matching Parts Campaign) ───
+BRANCHES = {
+    1: "Cambridge", 2: "North Canton", 3: "Gallipolis", 4: "Dublin",
+    5: "Monroe", 6: "Burlington", 7: "Perrysburg", 9: "Brunswick",
+    11: "Mentor", 12: "Fort Wayne", 13: "Indianapolis", 14: "Mansfield",
+    15: "Heath", 16: "Marietta", 17: "Evansville", 19: "Holt", 20: "Novi",
+}
+BRANCH_NAMES = sorted(BRANCHES.values())
+
+REGIONS = {
+    "SE Region": [1, 3, 4, 15, 16],       # Cambridge, Gallipolis, Dublin, Heath, Marietta
+    "NE Region": [2, 7, 9, 11, 14],       # North Canton, Perrysburg, Brunswick, Mentor, Mansfield
+    "West Region": [5, 6, 12, 13, 17, 19, 20],  # Monroe, Burlington, Fort Wayne, Indianapolis, Evansville, Holt, Novi
+}
+
+ADMIN_PASSWORD = "SEpm2026"
 
 # ─── Makes & Models ───
 MAKES_MODELS = {
@@ -124,6 +132,16 @@ SERVICE_TYPES = ["Field", "Shop"]
 for key in ["quotes", "current_quote", "leads_df", "procare_vins"]:
     if key not in st.session_state:
         st.session_state[key] = [] if key in ["quotes", "procare_vins"] else ({} if key == "current_quote" else None)
+
+# Login state
+if "page" not in st.session_state:
+    st.session_state.page = "login"
+if "branch" not in st.session_state:
+    st.session_state.branch = None
+if "branch_name" not in st.session_state:
+    st.session_state.branch_name = None
+if "rep_name" not in st.session_state:
+    st.session_state.rep_name = None
 
 # ─── Google Sheets ───
 def get_gsheet_connection():
@@ -1237,11 +1255,296 @@ st.markdown("""
     .lead-top { border-left: 4px solid #C8102E; padding-left: 12px; margin-bottom: 8px; }
     .lead-high { border-left: 4px solid #F59E0B; padding-left: 12px; margin-bottom: 8px; }
     .lead-med { border-left: 4px solid #3B82F6; padding-left: 12px; margin-bottom: 8px; }
+    .login-container { text-align: center; padding: 60px 20px; }
+    .login-title { color: #C8102E; font-size: 36px; font-weight: 600; margin-bottom: 8px; }
+    .login-subtitle { color: #666; font-size: 18px; margin-bottom: 8px; }
+    .login-detail { color: #888; font-size: 13px; margin-bottom: 40px; }
+    .header-bar { background: linear-gradient(135deg, #C8102E 0%, #8B0000 100%); color: white; padding: 14px 24px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+    .header-bar .branch-name { font-size: 20px; font-weight: 600; }
+    .header-bar .rep-info { font-size: 14px; opacity: 0.85; }
+    .region-header { font-size: 16px; font-weight: 600; margin: 16px 0 8px 0; padding: 8px 12px; background: #F3F4F6; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
+
+# ═══════════════════════════════════════════════════════════
+# LOGIN PAGE
+# ═══════════════════════════════════════════════════════════
+def show_login():
+    st.markdown("""
+    <div class="login-container">
+        <div class="login-title">PM Calculator</div>
+        <div class="login-subtitle">Southeastern Equipment Co.</div>
+        <div class="login-detail">Lead Discovery &bull; PM Quoting &bull; Branch Tracking</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.markdown("#### Select Your Branch")
+        options = []
+        branch_map = {}
+        for num, name in sorted(BRANCHES.items()):
+            label = f"{num} - {name}"
+            options.append(label)
+            branch_map[label] = num
+        selected = st.selectbox("Branch", options, label_visibility="collapsed")
+
+        st.markdown("#### Your Name")
+        rep_name = st.text_input("Name", label_visibility="collapsed", placeholder="First Last")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if st.button("Start", use_container_width=True, type="primary"):
+            if selected and rep_name.strip():
+                branch_id = branch_map[selected]
+                st.session_state.branch = branch_id
+                st.session_state.branch_name = BRANCHES[branch_id]
+                st.session_state.rep_name = rep_name.strip()
+                st.session_state.page = "dashboard"
+                st.rerun()
+            else:
+                st.warning("Pick your branch and enter your name to continue.")
+
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        if st.button("Admin Dashboard", use_container_width=True):
+            st.session_state.page = "admin_login"
+            st.rerun()
+
+    st.markdown("""
+    <div style="text-align:center; color:#999; font-size:12px; margin-top:60px;">
+        Southeastern Equipment Co. &bull; PM Program 2026
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN LOGIN
+# ═══════════════════════════════════════════════════════════
+def show_admin_login():
+    st.markdown("""
+    <div class="login-container">
+        <div class="login-title">Admin Dashboard</div>
+        <div class="login-subtitle">PM Program Performance</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        password = st.text_input("Password", type="password")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Back", use_container_width=True):
+                st.session_state.page = "login"
+                st.rerun()
+        with col_b:
+            if st.button("Login", use_container_width=True, type="primary"):
+                if password == ADMIN_PASSWORD:
+                    st.session_state.page = "admin"
+                    st.session_state.rep_name = "Admin"
+                    st.session_state.branch_name = "All Branches"
+                    st.rerun()
+                else:
+                    st.error("Incorrect password")
+
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN DASHBOARD
+# ═══════════════════════════════════════════════════════════
+def show_admin_dashboard():
+    import plotly.express as px
+
+    st.markdown(f"""
+    <div class="header-bar">
+        <span class="branch-name">Admin Dashboard &mdash; PM Program</span>
+        <span class="rep-info">All Regions &bull; 2026</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_r = st.columns([6, 1])
+    with col_r:
+        if st.button("Logout"):
+            st.session_state.page = "login"
+            st.session_state.branch = None
+            st.session_state.branch_name = None
+            st.session_state.rep_name = None
+            st.rerun()
+
+    # Load tracking data from Google Sheets
+    sheet = get_gsheet_connection()
+    tracking_data = []
+    if sheet:
+        try:
+            ws_list = sheet.spreadsheet.worksheets()
+            tracking_ws = None
+            for ws in ws_list:
+                if ws.title == "Tracking":
+                    tracking_ws = ws
+                    break
+            if tracking_ws:
+                records = tracking_ws.get_all_records()
+                if records:
+                    tracking_data = records
+        except Exception:
+            pass
+
+    tracking_df = pd.DataFrame(tracking_data) if tracking_data else pd.DataFrame()
+
+    # Summary metrics
+    st.markdown("### Program Overview")
+    col1, col2, col3, col4 = st.columns(4)
+
+    if not tracking_df.empty and "Status" in tracking_df.columns:
+        total_tracked = len(tracking_df)
+        called = len(tracking_df[tracking_df["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])])
+        quoted = len(tracking_df[tracking_df["Status"].isin(["Quoted", "Sold"])])
+        sold = len(tracking_df[tracking_df["Status"] == "Sold"])
+    else:
+        total_tracked = called = quoted = sold = 0
+
+    with col1:
+        st.markdown(f'<div class="metric-card"><div class="label">Total Tracked</div><div class="value">{total_tracked}</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-card"><div class="label">Calls Made</div><div class="value">{called}</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-card"><div class="label">Quotes Sent</div><div class="value">{quoted}</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="metric-card"><div class="label">PMs Sold</div><div class="value">{sold}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Region breakdown
+    st.markdown("### Performance by Region")
+    for region_name, branch_ids in REGIONS.items():
+        region_branches = [BRANCHES[bid] for bid in branch_ids if bid in BRANCHES]
+
+        if not tracking_df.empty and "Branch" in tracking_df.columns:
+            region_df = tracking_df[tracking_df["Branch"].isin(region_branches)]
+            r_total = len(region_df)
+            r_called = len(region_df[region_df["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])]) if "Status" in region_df.columns else 0
+            r_quoted = len(region_df[region_df["Status"].isin(["Quoted", "Sold"])]) if "Status" in region_df.columns else 0
+            r_sold = len(region_df[region_df["Status"] == "Sold"]) if "Status" in region_df.columns else 0
+        else:
+            region_df = pd.DataFrame()
+            r_total = r_called = r_quoted = r_sold = 0
+
+        st.markdown(f'<div class="region-header">{region_name} &mdash; {r_called} Calls / {r_quoted} Quotes / {r_sold} Sold</div>', unsafe_allow_html=True)
+
+        branch_rows = []
+        for bid in branch_ids:
+            bname = BRANCHES.get(bid, "")
+            if not tracking_df.empty and "Branch" in tracking_df.columns:
+                bdf = tracking_df[tracking_df["Branch"] == bname]
+                b_called = len(bdf[bdf["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])]) if "Status" in bdf.columns else 0
+                b_quoted = len(bdf[bdf["Status"].isin(["Quoted", "Sold"])]) if "Status" in bdf.columns else 0
+                b_sold = len(bdf[bdf["Status"] == "Sold"]) if "Status" in bdf.columns else 0
+            else:
+                b_called = b_quoted = b_sold = 0
+            branch_rows.append({"Branch": bname, "Calls": b_called, "Quotes": b_quoted, "Sold": b_sold})
+
+        branch_perf_df = pd.DataFrame(branch_rows)
+        st.dataframe(branch_perf_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Rep leaderboard
+    st.markdown("### Rep Leaderboard")
+    if not tracking_df.empty and "Rep" in tracking_df.columns and "Status" in tracking_df.columns:
+        rep_stats = tracking_df.groupby("Rep").agg(
+            Calls=("Status", lambda x: x.isin(["Called", "Quoted", "Sold", "In Progress"]).sum()),
+            Quotes=("Status", lambda x: x.isin(["Quoted", "Sold"]).sum()),
+            Sold=("Status", lambda x: (x == "Sold").sum()),
+        ).reset_index().sort_values("Sold", ascending=False)
+        st.dataframe(rep_stats, use_container_width=True, hide_index=True)
+    else:
+        st.info("No tracking data yet. Reps will appear here once they start logging activity.")
+
+    # Quote history from main sheet
+    st.markdown("---")
+    st.markdown("### Recent Quotes (All Branches)")
+    quotes_df = load_quotes_from_sheet()
+    if not quotes_df.empty:
+        st.dataframe(quotes_df.tail(20), use_container_width=True, hide_index=True)
+    else:
+        st.info("No quotes saved yet.")
+
+
+# ═══════════════════════════════════════════════════════════
+# TRACKING HELPERS (save rep activity to Sheets)
+# ═══════════════════════════════════════════════════════════
+def get_tracking_sheet():
+    """Get or create the Tracking worksheet."""
+    sheet = get_gsheet_connection()
+    if sheet is None:
+        return None
+    try:
+        ws_list = sheet.spreadsheet.worksheets()
+        for ws in ws_list:
+            if ws.title == "Tracking":
+                return ws
+        # Create it if missing
+        tracking_ws = sheet.spreadsheet.add_worksheet(title="Tracking", rows=5000, cols=10)
+        tracking_ws.append_row(["Date", "Branch", "Rep", "Customer", "Status", "Notes", "PM Value"], value_input_option="USER_ENTERED")
+        return tracking_ws
+    except Exception:
+        return None
+
+def save_tracking_entry(customer_name, status, notes="", pm_value=0):
+    """Save a lead tracking entry."""
+    ws = get_tracking_sheet()
+    if ws is None:
+        return False
+    try:
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            st.session_state.branch_name or "",
+            st.session_state.rep_name or "",
+            customer_name,
+            status,
+            notes,
+            pm_value,
+        ]
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE ROUTING
+# ═══════════════════════════════════════════════════════════
+if st.session_state.page == "login":
+    show_login()
+    st.stop()
+elif st.session_state.page == "admin_login":
+    show_admin_login()
+    st.stop()
+elif st.session_state.page == "admin":
+    show_admin_dashboard()
+    st.stop()
+
+# ═══════════════════════════════════════════════════════════
+# MAIN DASHBOARD (logged-in branch reps)
+# ═══════════════════════════════════════════════════════════
 # ─── Header ───
-st.markdown('<div class="main-header"><h1>Southeastern Equipment Co.</h1><p>PM Lead Discovery & Calculator</p></div>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="header-bar">
+    <span class="branch-name">{st.session_state.branch_name} &mdash; PM Tool</span>
+    <span class="rep-info">{st.session_state.rep_name}</span>
+</div>
+""", unsafe_allow_html=True)
+
+col_head_l, col_head_r = st.columns([6, 1])
+with col_head_r:
+    if st.button("Logout", key="main_logout"):
+        st.session_state.page = "login"
+        st.session_state.branch = None
+        st.session_state.branch_name = None
+        st.session_state.rep_name = None
+        st.rerun()
 
 # ═══════════════════════════════════════════════════════════
 # TABS
@@ -1452,6 +1755,23 @@ with tab_leads:
                             st.metric(spend_label, f"${spend_val:,.0f}")
                         with c5:
                             st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
+
+                        # Quick tracking log
+                        with st.expander(f"Log Activity for {row['Customer']}", expanded=False):
+                            tc1, tc2, tc3 = st.columns([1, 1, 2])
+                            cust_key = row["Customer"].replace(" ", "_")[:20]
+                            with tc1:
+                                track_status = st.selectbox("Status", ["Called", "Quoted", "In Progress", "Sold", "Not Interested"], key=f"ts_{cust_key}")
+                            with tc2:
+                                track_pm_val = st.number_input("PM Value ($)", min_value=0, value=int(row.get("total_annual_pm", 0)), key=f"tv_{cust_key}")
+                            with tc3:
+                                track_notes = st.text_input("Notes", key=f"tn_{cust_key}")
+                            if st.button("Save", key=f"tb_{cust_key}", type="primary"):
+                                if save_tracking_entry(row["Customer"], track_status, track_notes, track_pm_val):
+                                    st.success(f"Logged: {row['Customer']} marked as {track_status}")
+                                else:
+                                    st.warning("Could not save to Google Sheets. Check connection.")
+
                         st.divider()
 
         else:  # By Machine/Lead
@@ -1588,9 +1908,9 @@ with tab_calc:
     with col1:
         customer_name = st.text_input("Customer Name")
     with col2:
-        branch = st.selectbox("Branch", [""] + BRANCHES)
+        branch = st.selectbox("Branch", [""] + BRANCH_NAMES, index=(BRANCH_NAMES.index(st.session_state.branch_name) + 1) if st.session_state.branch_name in BRANCH_NAMES else 0)
     with col3:
-        rep = st.text_input("Service Rep")
+        rep = st.text_input("Service Rep", value=st.session_state.rep_name or "")
 
     col1, col2 = st.columns(2)
     with col1:
