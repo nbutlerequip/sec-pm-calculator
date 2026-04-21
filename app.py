@@ -1203,68 +1203,151 @@ def build_lead_explanation(row):
 # ═══════════════════════════════════════════════════════════
 # PDF GENERATION
 # ═══════════════════════════════════════════════════════════
+SEC_SLATE = "#7A8B9C"  # Slate-blue from SEC invoice template
+
+def _pdf_header_footer(canvas_obj, doc):
+    """Draw the SEC invoice-style header banner and footer on every page."""
+    canvas_obj.saveState()
+    w, h = letter
+
+    # ── Header banner (right side, slate-blue) ──
+    banner_h = 70
+    banner_x = w * 0.38
+    canvas_obj.setFillColor(colors.HexColor(SEC_SLATE))
+    canvas_obj.rect(banner_x, h - banner_h - 10, w - banner_x, banner_h, fill=1, stroke=0)
+    # Company name in banner
+    canvas_obj.setFillColor(colors.white)
+    canvas_obj.setFont("Helvetica-Bold", 22)
+    canvas_obj.drawString(banner_x + 20, h - 42, "Southeastern")
+    canvas_obj.setFont("Helvetica", 11)
+    canvas_obj.drawString(banner_x + 20, h - 58, "EQUIPMENT COMPANY")
+
+    # Left side: "PREVENTIVE MAINTENANCE QUOTE" label
+    canvas_obj.setFillColor(colors.HexColor(SEC_RED))
+    canvas_obj.setFont("Helvetica-Bold", 13)
+    canvas_obj.drawString(doc.leftMargin, h - 38, "PREVENTIVE")
+    canvas_obj.drawString(doc.leftMargin, h - 53, "MAINTENANCE QUOTE")
+
+    # Thin red line under header
+    canvas_obj.setStrokeColor(colors.HexColor(SEC_RED))
+    canvas_obj.setLineWidth(2)
+    canvas_obj.line(doc.leftMargin, h - banner_h - 16, w - doc.rightMargin, h - banner_h - 16)
+
+    # ── Footer ──
+    # Remit payment line
+    canvas_obj.setStrokeColor(colors.HexColor(SEC_SLATE))
+    canvas_obj.setLineWidth(0.5)
+    canvas_obj.line(doc.leftMargin, 58, w - doc.rightMargin, 58)
+
+    canvas_obj.setFillColor(colors.HexColor(SEC_DARK))
+    canvas_obj.setFont("Helvetica-Bold", 7)
+    canvas_obj.drawString(doc.leftMargin + 40, 63, "REMIT PAYMENT TO:")
+    canvas_obj.setFont("Helvetica", 7)
+    canvas_obj.drawString(doc.leftMargin + 145, 63, "Southeastern Equipment Co., Inc., 10874 East Pike Rd., Cambridge, Ohio 43725")
+
+    # Bottom line: website | terms | EIN
+    canvas_obj.setStrokeColor(colors.HexColor("#CCCCCC"))
+    canvas_obj.line(doc.leftMargin, 44, w - doc.rightMargin, 44)
+
+    canvas_obj.setFillColor(colors.HexColor(SEC_GRAY))
+    canvas_obj.setFont("Helvetica", 7)
+    canvas_obj.drawString(doc.leftMargin, 34, "www.southeasternequip.com")
+    canvas_obj.drawCentredString(w / 2, 34, "See Reverse for Terms and Conditions")
+    canvas_obj.drawRightString(w - doc.rightMargin, 34, "EIN 34-1503254")
+
+    canvas_obj.restoreState()
+
+
 def generate_pdf(quote_data):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch, leftMargin=0.75*inch, rightMargin=0.75*inch)
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        topMargin=1.2*inch,   # Room for header banner
+        bottomMargin=1.0*inch,  # Room for footer
+        leftMargin=0.6*inch,
+        rightMargin=0.6*inch,
+    )
+    usable_w = letter[0] - doc.leftMargin - doc.rightMargin
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="SECTitle", fontSize=20, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_RED), spaceAfter=2, leading=24))
-    styles.add(ParagraphStyle(name="SECSubtitle", fontSize=11, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), spaceAfter=10, leading=14))
-    styles.add(ParagraphStyle(name="SectionHead", fontSize=12, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_DARK), spaceBefore=14, spaceAfter=6))
-    styles.add(ParagraphStyle(name="FooterText", fontSize=8, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="BoxLabel", fontSize=7, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_GRAY), leading=10))
+    styles.add(ParagraphStyle(name="BoxValue", fontSize=10, fontName="Helvetica", textColor=colors.HexColor(SEC_DARK), leading=13))
+    styles.add(ParagraphStyle(name="SectionHead", fontSize=10, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_DARK), spaceBefore=10, spaceAfter=4))
+    styles.add(ParagraphStyle(name="SmallNote", fontSize=8, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), leading=10))
 
     elements = []
-    elements.append(Paragraph("SOUTHEASTERN EQUIPMENT CO.", styles["SECTitle"]))
-    elements.append(Paragraph("Preventive Maintenance Quote", styles["SECSubtitle"]))
-    elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor(SEC_RED)))
-    elements.append(Spacer(1, 14))
 
-    # Quote info
-    info_data = [
-        ["Quote Date", "Branch", "Service Rep", "Service Type"],
-        [quote_data.get("date", ""), quote_data.get("branch", ""), quote_data.get("rep", ""), quote_data.get("service_type", "")],
+    # ── Quote info centered box ──
+    quote_num = f"Q-{datetime.now().strftime('%y%m%d%H%M')}"
+    quote_info_data = [
+        [Paragraph("<b>Quote #</b>", styles["BoxLabel"]), Paragraph("<b>Date</b>", styles["BoxLabel"]), Paragraph("<b>Branch</b>", styles["BoxLabel"])],
+        [Paragraph(quote_num, styles["BoxValue"]), Paragraph(quote_data.get("date", ""), styles["BoxValue"]), Paragraph(quote_data.get("branch", ""), styles["BoxValue"])],
     ]
-    t = RLTable(info_data, colWidths=[1.7*inch]*4)
+    t = RLTable(quote_info_data, colWidths=[usable_w * 0.33] * 3)
     t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 8),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(SEC_GRAY)),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica"), ("FONTSIZE", (0, 1), (-1, 1), 11),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 2), ("TOPPADDING", (0, 1), (-1, 1), 0),
-        ("LINEBELOW", (0, 1), (-1, 1), 0.5, colors.HexColor("#DDDDDD")),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(SEC_SLATE)),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
     ]))
     elements.append(t)
-    elements.append(Spacer(1, 8))
+    elements.append(Spacer(1, 10))
 
-    # Customer
+    # ── Two side-by-side boxes: Customer (left) and Machine Info (right) ──
+    half_w = usable_w * 0.48
     cust = quote_data.get("customer_name", "")
-    if cust:
-        elements.append(Paragraph("Customer", styles["SectionHead"]))
-        elements.append(Paragraph(cust, styles["Normal"]))
-        elements.append(Spacer(1, 8))
+    rep = quote_data.get("rep", "")
+    stype = quote_data.get("service_type", "")
 
-    # Machine details
-    elements.append(Paragraph("Machine Details", styles["SectionHead"]))
-    mach_data = [
-        ["Make", "Model", "Category", "Serial Number"],
-        [quote_data.get("make", ""), quote_data.get("model", ""), quote_data.get("category", ""), quote_data.get("serial", "")],
-        ["Machine Age (Years)", "Current Hours", "Travel Time (min)", ""],
-        [str(quote_data.get("machine_age", "")), f"{quote_data.get('machine_hours', 0):,}", str(quote_data.get("travel_time", "")), ""],
+    left_data = [
+        [Paragraph("<b>CUSTOMER</b>", styles["BoxLabel"])],
+        [Paragraph(cust if cust else " ", styles["BoxValue"])],
+        [Paragraph(" ", styles["SmallNote"])],
+        [Paragraph(f"<b>Service Rep:</b> {rep}" if rep else " ", styles["SmallNote"])],
+        [Paragraph(f"<b>Service Type:</b> {stype}" if stype else " ", styles["SmallNote"])],
     ]
-    t = RLTable(mach_data, colWidths=[1.7*inch]*4)
-    t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 8),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(SEC_GRAY)),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica"), ("FONTSIZE", (0, 1), (-1, 1), 11),
-        ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"), ("FONTSIZE", (0, 2), (-1, 2), 8),
-        ("TEXTCOLOR", (0, 2), (-1, 2), colors.HexColor(SEC_GRAY)),
-        ("FONTNAME", (0, 3), (-1, 3), "Helvetica"), ("FONTSIZE", (0, 3), (-1, 3), 11),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 2), ("BOTTOMPADDING", (0, 2), (-1, 2), 2),
+    left_t = RLTable(left_data, colWidths=[half_w])
+    left_t.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(SEC_SLATE)),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
     ]))
-    elements.append(t)
-    elements.append(Spacer(1, 8))
 
-    # Pricing
-    elements.append(Paragraph("PM Pricing Breakdown", styles["SectionHead"]))
+    make = quote_data.get("make", "")
+    model = quote_data.get("model", "")
+    cat = quote_data.get("category", "")
+    serial = quote_data.get("serial", "")
+    age = quote_data.get("machine_age", 0)
+    hrs = quote_data.get("machine_hours", 0)
+
+    right_data = [
+        [Paragraph("<b>MACHINE DETAILS</b>", styles["BoxLabel"])],
+        [Paragraph(f"{make} {model}" if make else " ", styles["BoxValue"])],
+        [Paragraph(f"{cat}", styles["SmallNote"])],
+        [Paragraph(f"<b>Serial:</b> {serial}  |  <b>Age:</b> {age} yr  |  <b>Hours:</b> {hrs:,}", styles["SmallNote"])],
+        [Paragraph(" ", styles["SmallNote"])],
+    ]
+    right_t = RLTable(right_data, colWidths=[half_w])
+    right_t.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(SEC_SLATE)),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+
+    # Wrap both in an outer table for side-by-side
+    outer = RLTable([[left_t, right_t]], colWidths=[half_w + 6, half_w + 6])
+    outer.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(outer)
+    elements.append(Spacer(1, 16))
+
+    # ── Pricing table ──
     parts_cost = quote_data.get("parts_cost", 0)
     labor_cost = quote_data.get("labor_cost", 0)
     travel_cost = quote_data.get("travel_cost", 0)
@@ -1275,40 +1358,44 @@ def generate_pdf(quote_data):
         ["Description", "Amount"],
         ["Estimated Parts", f"${parts_cost:,.2f}"],
         ["Estimated Labor / Service", f"${labor_cost:,.2f}"],
-        ["Travel", f"${travel_cost:,.2f}"],
-        ["", ""],
-        ["Total Estimated Cost", f"${total:,.2f}"],
-        ["Annual PM Contract Price", f"${annual:,.2f}"],
     ]
-    t = RLTable(price_data, colWidths=[4.5*inch, 2.3*inch])
+    if travel_cost > 0:
+        price_data.append(["Travel", f"${travel_cost:,.2f}"])
+    price_data.append(["", ""])
+    price_data.append(["Total Estimated Cost", f"${total:,.2f}"])
+    price_data.append(["Annual PM Contract Price", f"${annual:,.2f}"])
+
+    t = RLTable(price_data, colWidths=[usable_w * 0.65, usable_w * 0.35])
     t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 10),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(SEC_RED)),
+        # Header row
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(SEC_SLATE)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("FONTNAME", (0, -2), (-1, -1), "Helvetica-Bold"), ("FONTSIZE", (0, -2), (-1, -1), 12),
-        ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor(SEC_RED)),
+        # Body rows
+        ("FONTNAME", (0, 1), (-1, -3), "Helvetica"), ("FONTSIZE", (0, 1), (-1, -3), 10),
         ("TOPPADDING", (0, 1), (-1, -1), 6), ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
-        ("LINEBELOW", (0, -3), (-1, -3), 0.5, colors.HexColor("#DDDDDD")),
+        ("LINEBELOW", (0, 1), (-1, -4), 0.25, colors.HexColor("#DDDDDD")),
+        # Separator before totals
+        ("LINEBELOW", (0, -3), (-1, -3), 0.75, colors.HexColor(SEC_SLATE)),
+        # Total row
+        ("FONTNAME", (0, -2), (-1, -2), "Helvetica-Bold"), ("FONTSIZE", (0, -2), (-1, -2), 10),
+        # Annual PM row (highlight)
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"), ("FONTSIZE", (0, -1), (-1, -1), 12),
+        ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor(SEC_RED)),
         ("LINEBELOW", (0, -1), (-1, -1), 1.5, colors.HexColor(SEC_RED)),
+        ("TOPPADDING", (0, -1), (-1, -1), 8),
     ]))
     elements.append(t)
 
-    # Notes
+    # ── Notes ──
     notes = quote_data.get("notes", "")
     if notes:
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Notes", styles["SectionHead"]))
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph("<b>Notes</b>", styles["SectionHead"]))
         elements.append(Paragraph(notes, styles["Normal"]))
 
-    # Footer
-    elements.append(Spacer(1, 24))
-    elements.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#DDDDDD")))
-    elements.append(Spacer(1, 8))
-    elements.append(Paragraph("Southeastern Equipment Co. | southeasternequip.com", styles["FooterText"]))
-    elements.append(Paragraph(f"Generated {datetime.now().strftime('%m/%d/%Y %I:%M %p')}", styles["FooterText"]))
-
-    doc.build(elements)
+    doc.build(elements, onFirstPage=_pdf_header_footer, onLaterPages=_pdf_header_footer)
     buffer.seek(0)
     return buffer
 
@@ -2078,8 +2165,9 @@ with tab_calc:
         col1, col2, col3 = st.columns(3)
         with col1:
             pdf_buf = generate_pdf(q)
-            safe = (customer_name or "quote").replace(" ", "_")
-            st.download_button("Download PDF Quote", data=pdf_buf, file_name=f"SEC_PM_{safe}_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf", use_container_width=True)
+            safe = (customer_name or "Quote").replace(" ", "_").replace("/", "-")
+            date_str = datetime.now().strftime("%m-%d-%Y")
+            st.download_button("Download PDF Quote", data=pdf_buf, file_name=f"SEC_PM_Quote_{safe}_{date_str}.pdf", mime="application/pdf", use_container_width=True)
         with col2:
             if st.button("Save Quote", use_container_width=True, type="secondary"):
                 saved = save_quote_to_sheet(q)
