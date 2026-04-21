@@ -1758,48 +1758,22 @@ with tab_leads:
 
         st.divider()
 
-        # Filters row 1
-        col1, col2, col3, col4 = st.columns(4)
+        # Filters
+        col1, col2, col3 = st.columns(3)
         with col1:
             filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
         with col2:
-            source_options = sorted([s for s in all_leads["Source"].unique() if s]) if "Source" in all_leads.columns else []
-            filter_source = st.multiselect("Lead Source", source_options) if source_options else []
-        with col3:
             locations = sorted([l for l in all_leads["Location"].unique() if l])
             filter_location = st.multiselect("Branch / City", locations)
-        with col4:
-            min_score = st.slider("Min Lead Score", 0, 100, 50)
-
-        # Filters row 2
-        fc1, fc2, fc3, fc4 = st.columns(4)
-        with fc1:
-            lead_cats = sorted([c for c in all_leads["Lead Category"].unique() if c]) if "Lead Category" in all_leads.columns else []
-            filter_lead_cat = st.multiselect("Lead Category", lead_cats) if lead_cats else []
-        with fc2:
-            case_classes = sorted([c for c in all_leads["CASE Class"].unique() if c]) if "CASE Class" in all_leads.columns else []
-            filter_case = st.multiselect("CASE Classification", case_classes) if case_classes else []
-        with fc3:
-            fleet_opts = sorted([f for f in all_leads["Fleet"].unique() if f]) if "Fleet" in all_leads.columns else []
-            filter_fleet = st.multiselect("Fleet Size", fleet_opts) if fleet_opts else []
-        with fc4:
+        with col3:
             pm_filter = st.radio("PM Status", ["No Active PM", "All", "Has Active PM"], horizontal=True) if "Has PM" in all_leads.columns else "All"
 
         # Apply filters
         display = all_leads.copy()
         if filter_tier:
             display = display[display["Tier"].isin(filter_tier)]
-        if filter_source and "Source" in display.columns:
-            display = display[display["Source"].isin(filter_source)]
         if filter_location:
             display = display[display["Location"].isin(filter_location)]
-        display = display[display["Lead Score"] >= min_score]
-        if filter_lead_cat and "Lead Category" in display.columns:
-            display = display[display["Lead Category"].isin(filter_lead_cat)]
-        if filter_case and "CASE Class" in display.columns:
-            display = display[display["CASE Class"].isin(filter_case)]
-        if filter_fleet and "Fleet" in display.columns:
-            display = display[display["Fleet"].isin(filter_fleet)]
         if pm_filter == "No Active PM" and "Has PM" in display.columns:
             display = display[~display["Has PM"]]
         elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
@@ -1816,69 +1790,90 @@ with tab_leads:
                 st.caption(f"Showing {len(cust_display)} customers")
                 for _, row in cust_display.iterrows():
                     tier = row["Tier"]
-                    source_tag = row.get("source", "")
-
-                    # Build subtitle with context
-                    subtitle_parts = []
-                    if source_tag:
-                        subtitle_parts.append(f"Source: {source_tag}")
-                    if row.get("location"):
-                        subtitle_parts.append(row["location"])
-                    if "case_class" in row and row.get("case_class"):
-                        subtitle_parts.append(f"CASE: {row['case_class']}")
-                    if "fleet" in row and row.get("fleet"):
-                        subtitle_parts.append(f"Fleet: {row['fleet']}")
-                    if row.get("models"):
-                        subtitle_parts.append(row["models"])
+                    cust_name = row["Customer"]
 
                     with st.container():
-                        c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
+                        # Row 1: Customer name + category + score
+                        c1, c2 = st.columns([5, 1])
                         with c1:
-                            label = f"**{row['Customer']}**"
+                            label = f"**{cust_name}**"
                             if "lead_category" in row and row.get("lead_category"):
                                 label += f"  &nbsp; `{row['lead_category']}`"
                             st.markdown(label, unsafe_allow_html=True)
-                            st.caption(" | ".join(subtitle_parts))
+                            if row.get("location"):
+                                st.caption(row["location"])
                         with c2:
-                            machines = int(row["machines"])
-                            if machines > 0:
-                                st.metric("Machines", machines)
-                            elif "fleet" in row and row.get("fleet"):
-                                st.metric("Fleet", row["fleet"])
-                            else:
-                                st.metric("Machines", "N/A")
-                        with c3:
-                            st.metric("PM Value", f"${row['total_annual_pm']:,.0f}")
-                        with c4:
-                            spend_label = "Parts Opp"
-                            spend_val = row["total_parts_value"]
-                            if "total_spend" in row and row.get("total_spend", 0) > 0:
-                                spend_label = "YTD Spend"
-                                spend_val = row["total_spend"]
-                            st.metric(spend_label, f"${spend_val:,.0f}")
-                        with c5:
                             st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
 
-                        # Lead explanation
+                        # Row 2: Machines list
+                        cust_machines = display[display["Customer"] == cust_name]
+                        if not cust_machines.empty and "Model" in cust_machines.columns:
+                            machine_lines = []
+                            for _, m in cust_machines.iterrows():
+                                model = m.get("Model", "")
+                                cat = m.get("Category", "")
+                                hrs = m.get("Eng Hrs", 0)
+                                pm_val = m.get("Annual PM Value", 0)
+                                parts_val = m.get("Parts Value", 0)
+                                if model or cat:
+                                    line = f"**{model}** ({cat})"
+                                    details = []
+                                    if hrs and hrs > 0:
+                                        details.append(f"{hrs:,.0f} hrs")
+                                    if parts_val and parts_val > 0:
+                                        details.append(f"${parts_val:,.0f} parts")
+                                    if pm_val and pm_val > 0:
+                                        details.append(f"${pm_val:,.0f}/yr PM")
+                                    if details:
+                                        line += f" — {', '.join(details)}"
+                                    machine_lines.append(line)
+                            if machine_lines:
+                                st.markdown("**Machines:**")
+                                for ml in machine_lines:
+                                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{ml}", unsafe_allow_html=True)
+                        elif "fleet" in row and row.get("fleet"):
+                            st.markdown(f"**Fleet Size:** {row['fleet']}")
+
+                        # Row 3: Spend summary
+                        spend_parts = []
+                        ytd_parts = float(row.get("ytd_parts", 0) or 0)
+                        ytd_service = float(row.get("ytd_service", 0) or 0)
+                        total_spend = float(row.get("total_spend", 0) or 0)
+                        parts_opp = float(row.get("total_parts_value", 0) or 0)
+                        pm_value = float(row.get("total_annual_pm", 0) or 0)
+
+                        if total_spend > 0:
+                            breakdown = []
+                            if ytd_parts > 0:
+                                breakdown.append(f"${ytd_parts:,.0f} parts")
+                            if ytd_service > 0:
+                                breakdown.append(f"${ytd_service:,.0f} service")
+                            spend_parts.append(f"YTD Spend: ${total_spend:,.0f} ({', '.join(breakdown)})" if breakdown else f"YTD Spend: ${total_spend:,.0f}")
+                        elif parts_opp > 0:
+                            spend_parts.append(f"Parts Opportunity: ${parts_opp:,.0f}")
+                        if pm_value > 0:
+                            spend_parts.append(f"Est. Annual PM Value: ${pm_value:,.0f}")
+                        if spend_parts:
+                            st.markdown(" · ".join(spend_parts))
+
+                        # Row 4: Why + Angle
                         reasons, angle = build_lead_explanation(row)
-                        if reasons:
-                            st.markdown(f"**Why this lead:** {' · '.join(reasons)}")
                         if angle:
                             st.markdown(f"**Angle:** {angle}")
 
                         # Quick tracking log
-                        with st.expander(f"Log Activity for {row['Customer']}", expanded=False):
+                        with st.expander(f"Log Activity", expanded=False):
                             tc1, tc2, tc3 = st.columns([1, 1, 2])
-                            cust_key = row["Customer"].replace(" ", "_")[:20]
+                            cust_key = cust_name.replace(" ", "_")[:20]
                             with tc1:
                                 track_status = st.selectbox("Status", ["Called", "Quoted", "In Progress", "Sold", "Not Interested"], key=f"ts_{cust_key}")
                             with tc2:
-                                track_pm_val = st.number_input("PM Value ($)", min_value=0, value=int(row.get("total_annual_pm", 0)), key=f"tv_{cust_key}")
+                                track_pm_val = st.number_input("PM Value ($)", min_value=0, value=int(pm_value), key=f"tv_{cust_key}")
                             with tc3:
                                 track_notes = st.text_input("Notes", key=f"tn_{cust_key}")
                             if st.button("Save", key=f"tb_{cust_key}", type="primary"):
-                                if save_tracking_entry(row["Customer"], track_status, track_notes, track_pm_val):
-                                    st.success(f"Logged: {row['Customer']} marked as {track_status}")
+                                if save_tracking_entry(cust_name, track_status, track_notes, track_pm_val):
+                                    st.success(f"Logged: {cust_name} marked as {track_status}")
                                 else:
                                     st.warning("Could not save to Google Sheets. Check connection.")
 
