@@ -2014,6 +2014,11 @@ with tab_calc:
         with col2:
             if st.button("Save Quote", use_container_width=True, type="secondary"):
                 saved = save_quote_to_sheet(q)
+                # Auto-log to Tracking sheet so it shows in Discovery and Admin Dashboard
+                cust = q.get("customer_name", "")
+                pm_val = q.get("annual_pm_price", 0)
+                if cust:
+                    save_tracking_entry(cust, "Quoted", f"{q.get('make','')} {q.get('model','')} - {q.get('category','')}", pm_val)
                 st.success("Quote saved to Google Sheets" if saved else "Quote saved locally (Sheets not connected)")
         with col3:
             if st.button("Clear / New Quote", use_container_width=True):
