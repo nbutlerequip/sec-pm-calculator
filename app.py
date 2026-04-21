@@ -1136,6 +1136,70 @@ def aggregate_customer_leads(scored_df):
     return agg.sort_values("Customer Score", ascending=False)
 
 
+def build_lead_explanation(row):
+    """Build a plain English explanation of why this customer is a lead and what the angle is."""
+    reasons = []
+    angle = ""
+
+    cat = row.get("lead_category", "")
+    fleet = row.get("fleet", "")
+    machines = int(row.get("machines", 0))
+    ytd_parts = float(row.get("ytd_parts", 0) or 0)
+    ytd_service = float(row.get("ytd_service", 0) or 0)
+    total_spend = float(row.get("total_spend", 0) or 0)
+    deals = int(row.get("hs_deals", 0) or 0)
+    case_class = row.get("case_class", "")
+    source = row.get("source", "")
+    models = row.get("models", "")
+    svc_status = row.get("service_status", "")
+
+    # Why they're on the list
+    if source == "CASE Alert" and machines > 0:
+        reasons.append(f"{machines} machine(s) with maintenance alerts ({models})" if models else f"{machines} machine(s) with maintenance alerts")
+    elif source == "HubSpot" and fleet:
+        reasons.append(f"Fleet size: {fleet}")
+
+    if total_spend > 0:
+        parts_str = f"${ytd_parts:,.0f} parts" if ytd_parts > 0 else ""
+        svc_str = f"${ytd_service:,.0f} service" if ytd_service > 0 else ""
+        spend_parts = [p for p in [parts_str, svc_str] if p]
+        reasons.append(f"Spending ${total_spend:,.0f} YTD ({', '.join(spend_parts)})" if spend_parts else f"Spending ${total_spend:,.0f} YTD")
+    elif ytd_parts > 0:
+        reasons.append(f"Buying ${ytd_parts:,.0f} in parts YTD")
+
+    if deals > 0:
+        reasons.append(f"{deals} deal(s) in CRM history")
+
+    if case_class:
+        reasons.append(f"CASE classification: {case_class}")
+
+    # The angle based on lead category
+    if cat == "Warranty Expiring":
+        angle = "Their warranty is expiring within 6 months. Perfect timing to transition them into a PM contract before they lose coverage."
+    elif cat == "Warranty Expired":
+        angle = "Their warranty already expired. They have no coverage right now. A PM contract fills that gap and keeps their machines running."
+    elif cat == "Parts Only, No Service":
+        angle = "They buy parts from us but do their own service work. Pitch the value of having SEC handle maintenance so they can focus on their jobs."
+    elif cat == "Active Service Customer":
+        angle = "They already bring machines to us for service. A PM contract locks in that relationship and gives them predictable costs."
+    elif cat == "Full Service (Lock In)":
+        angle = "They want us managing everything. A PM contract formalizes that and guarantees recurring revenue."
+    elif cat == "Lapsed Service":
+        angle = "Used to bring machines in for service but stopped. A PM contract is a reason to re-engage and bring them back."
+    elif cat == "Equipment Buyer (No Service)":
+        angle = "Bought equipment from us but never used our service department. Introduce PM as part of owning the machine."
+    elif cat == "Active PM (Upsell)":
+        angle = "Already has a PM contract. Look for upsell opportunities on additional machines or upgraded coverage."
+    elif cat == "No ProCare (New Lead)":
+        angle = "Machines are throwing maintenance alerts with no ProCare coverage. They need a PM plan before something breaks."
+    elif cat == "No ProCare (In CRM)":
+        angle = "In our CRM with maintenance alerts but no PM coverage. Start the conversation about preventing downtime."
+    else:
+        angle = "Potential PM opportunity based on their equipment and relationship with SEC."
+
+    return reasons, angle
+
+
 # ═══════════════════════════════════════════════════════════
 # PDF GENERATION
 # ═══════════════════════════════════════════════════════════
@@ -1794,6 +1858,13 @@ with tab_leads:
                             st.metric(spend_label, f"${spend_val:,.0f}")
                         with c5:
                             st.metric("Score", f"{row['Customer Score']:.0f}", delta=tier)
+
+                        # Lead explanation
+                        reasons, angle = build_lead_explanation(row)
+                        if reasons:
+                            st.markdown(f"**Why this lead:** {' · '.join(reasons)}")
+                        if angle:
+                            st.markdown(f"**Angle:** {angle}")
 
                         # Quick tracking log
                         with st.expander(f"Log Activity for {row['Customer']}", expanded=False):
