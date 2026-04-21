@@ -17,6 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 # ─── Page Config ───
+# v2.1 - PDF redesign, simplified machine list, updated filters
 st.set_page_config(page_title="SE PM Campaign", page_icon="SE", layout="wide", initial_sidebar_state="expanded")
 
 # ─── Brand ───
