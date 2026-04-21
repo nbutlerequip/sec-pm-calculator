@@ -209,9 +209,9 @@ def load_bundled_procare():
 # ═══════════════════════════════════════════════════════════
 HUBSPOT_TOKEN = st.secrets.get("hubspot_token", "")
 
-@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot data...")
+@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot companies...")
 def fetch_hubspot_companies():
-    """Pull company records from HubSpot to cross-reference with leads."""
+    """Pull company records from HubSpot with rich scoring data."""
     if not HUBSPOT_TOKEN:
         return {}
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
@@ -219,11 +219,19 @@ def fetch_hubspot_companies():
     url = "https://api.hubapi.com/crm/v3/objects/companies"
     params = {
         "limit": 100,
-        "properties": "name,city,state,industry,hs_lastmodifieddate,lifecyclestage,num_associated_deals",
+        "properties": ",".join([
+            "name", "city", "state", "lifecyclestage", "num_associated_deals",
+            "case_customer_classification", "case_ucc_prospect_classification",
+            "fleet_size__c", "account_stage__c", "annualrevenue",
+            "eda_last_purchase_date", "hs_lastmodifieddate",
+            "parts___service_engagement", "last_service_purchase",
+            "last_parts_purchase", "last_parts_invoice_date__c",
+            "sa_ytd_charges__c", "oe_ytd_charges__c",
+        ]),
     }
     try:
         after = None
-        for _ in range(20):  # max 2000 companies
+        for _ in range(40):  # max 4000 companies
             if after:
                 params["after"] = after
             resp = requests.get(url, headers=headers, params=params, timeout=15)
@@ -240,7 +248,19 @@ def fetch_hubspot_companies():
                         "state": props.get("state", ""),
                         "lifecycle": props.get("lifecyclestage", ""),
                         "deals": props.get("num_associated_deals", 0),
+                        "case_class": props.get("case_customer_classification", ""),
+                        "prospect_class": props.get("case_ucc_prospect_classification", ""),
+                        "fleet_size": props.get("fleet_size__c", ""),
+                        "account_stage": props.get("account_stage__c", ""),
+                        "annual_revenue": props.get("annualrevenue", ""),
+                        "last_purchase": props.get("eda_last_purchase_date", ""),
                         "last_modified": props.get("hs_lastmodifieddate", ""),
+                        "ps_engagement": props.get("parts___service_engagement", ""),
+                        "last_service": props.get("last_service_purchase", ""),
+                        "last_parts": props.get("last_parts_purchase", ""),
+                        "last_parts_date": props.get("last_parts_invoice_date__c", ""),
+                        "ytd_service": float(props.get("sa_ytd_charges__c") or 0),
+                        "ytd_parts": float(props.get("oe_ytd_charges__c") or 0),
                     }
             paging = data.get("paging", {}).get("next", {})
             after = paging.get("after")
@@ -250,78 +270,324 @@ def fetch_hubspot_companies():
         pass
     return companies
 
-@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot service tickets...")
-def fetch_hubspot_tickets():
-    """Pull service tickets from HubSpot for service spend enrichment."""
+@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot deal history...")
+def fetch_hubspot_deals():
+    """Pull deal records to build win/loss history and detect existing PM contracts."""
     if not HUBSPOT_TOKEN:
-        return {}
+        return {}, set()
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
-    tickets_by_company = {}
-    url = "https://api.hubapi.com/crm/v3/objects/tickets"
-    params = {
-        "limit": 100,
-        "properties": "subject,hs_pipeline_stage,createdate,hs_ticket_priority,content",
-    }
+    url = "https://api.hubapi.com/crm/v3/objects/deals/search"
+
+    # Track deals per company and PM-active companies
+    deals_by_company = {}  # company_name -> {won, lost, total_won_amount, last_close, has_warranty, warranty_expired}
+    pm_active_companies = set()  # company names with active PM deals
+
     try:
-        after = None
-        for _ in range(10):  # max 1000 tickets
-            if after:
-                params["after"] = after
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
-            if resp.status_code != 200:
-                break
-            data = resp.json()
-            for t in data.get("results", []):
-                props = t.get("properties", {})
-                subj = (props.get("subject") or "").upper()
-                tickets_by_company[t["id"]] = {
-                    "subject": props.get("subject", ""),
-                    "created": props.get("createdate", ""),
-                    "priority": props.get("hs_ticket_priority", ""),
+        # Pull closed won deals with associations
+        for stage, label in [("closedwon", "won"), ("closedlost", "lost")]:
+            after_val = 0
+            for _ in range(30):  # max 3000 per stage
+                payload = {
+                    "filterGroups": [{"filters": [{"propertyName": "dealstage", "operator": "EQ", "value": stage}]}],
+                    "properties": ["dealname", "amount", "closedate", "primary_company_name", "pm_eligible", "pm_status", "warranty_type__c", "warranty_information__c"],
+                    "limit": 100,
+                    "after": str(after_val),
                 }
-            paging = data.get("paging", {}).get("next", {})
-            after = paging.get("after")
-            if not after:
-                break
+                resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                for d in data.get("results", []):
+                    props = d.get("properties", {})
+                    co_name = (props.get("primary_company_name") or "").strip().upper()
+                    if not co_name:
+                        # Try to extract from deal name (format: "COMPANY - Location - Date")
+                        dn = props.get("dealname", "")
+                        if " - " in dn:
+                            co_name = dn.split(" - ")[0].strip().upper()
+                    if co_name:
+                        if co_name not in deals_by_company:
+                            deals_by_company[co_name] = {"won": 0, "lost": 0, "total_won_amount": 0, "last_close": "", "has_warranty": False}
+                        deals_by_company[co_name][label] += 1
+                        amt = float(props.get("amount") or 0)
+                        if label == "won":
+                            deals_by_company[co_name]["total_won_amount"] += amt
+                        cd = props.get("closedate", "")
+                        if cd > deals_by_company[co_name]["last_close"]:
+                            deals_by_company[co_name]["last_close"] = cd
+                        # Track warranty status
+                        wtype = (props.get("warranty_type__c") or "").lower()
+                        if label == "won" and wtype and "no warranty" not in wtype and "n/a" not in wtype:
+                            deals_by_company[co_name]["has_warranty"] = True
+
+                paging = data.get("paging", {}).get("next", {})
+                next_after = paging.get("after")
+                if not next_after:
+                    break
+                after_val = int(next_after)
+
+        # Pull PM-active deals (any pm_eligible deal that isn't closed lost)
+        payload = {
+            "filterGroups": [{"filters": [{"propertyName": "pm_eligible", "operator": "EQ", "value": "true"}]}],
+            "properties": ["primary_company_name", "pm_status", "pm_contract_value", "dealstage", "dealname"],
+            "limit": 100,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
+        if resp.status_code == 200:
+            for d in resp.json().get("results", []):
+                props = d.get("properties", {})
+                pm_st = (props.get("pm_status") or "").lower()
+                deal_st = (props.get("dealstage") or "").lower()
+                # Active if not closed lost
+                if deal_st != "closedlost" and pm_st not in ("closed lost", ""):
+                    co_name = (props.get("primary_company_name") or "").strip().upper()
+                    if not co_name:
+                        dn = props.get("dealname", "")
+                        if " - " in dn:
+                            co_name = dn.split(" - ")[0].strip().upper()
+                    if co_name:
+                        pm_active_companies.add(co_name)
+
     except Exception:
         pass
-    return tickets_by_company
+    return deals_by_company, pm_active_companies
 
-def enrich_leads_with_hubspot(scored_df, hs_companies):
-    """Add HubSpot data columns to scored leads."""
+def _match_hubspot_company(cust_upper, hs_companies):
+    """Match a customer name to HubSpot, trying exact then partial."""
+    match = hs_companies.get(cust_upper)
+    if match:
+        return match
+    for hs_name, hs_data in hs_companies.items():
+        if cust_upper in hs_name or hs_name in cust_upper:
+            return hs_data
+    return None
+
+
+# CASE classification scoring: how warm is this customer relationship?
+CASE_CLASS_BOOST = {
+    "Champion": 0.12,           # Best customers, lock them in with PM
+    "Loyal Customer": 0.10,     # Strong relationship, easy sell
+    "Potential Loyalist": 0.08, # Growing relationship, PM solidifies it
+    "New Customer": 0.06,       # Just started buying, PM builds stickiness
+    "Promising": 0.05,          # Showing interest
+    "Needs Attention": 0.15,    # HIGHEST boost: drifting away, PM re-engages
+    "About to Sleep": 0.12,     # At risk of leaving, PM creates recurring touchpoint
+    "Can't Lose Them": 0.14,    # High value at risk, PM is retention play
+    "At Risk": 0.13,            # Slipping away, PM contract locks in relationship
+    "Hibernating": 0.04,        # Gone quiet, still worth a shot but lower priority
+}
+
+# Fleet size scoring: bigger fleets = bigger contracts
+FLEET_SIZE_SCORE = {
+    "0 - Rent Only": 0,     # Renters don't need PM
+    "1-3": 0.02,
+    "4-10": 0.04,
+    "11-25": 0.06,
+    "26+": 0.07,
+    "26-50": 0.07,
+    "51-100": 0.09,
+    "101-250": 0.10,
+    "251-500": 0.12,
+}
+
+
+def _classify_lead_category(match, deal_info, has_procare_expired, has_pm, cust_upper):
+    """
+    Assign a lead category based on Nick's priority tiers:
+    1. No ProCare Coverage - machine has alerts but no ProCare (base case from scoring)
+    2. Warranty Expiring/Expired - bought equipment with warranty that's aging out
+    3. Regular Maintenance - comes in for service but no PM contract
+    4. Parts Only, No Service - buys parts but handles own service (pitch PM)
+    5. Unknown - in alerts but no HubSpot match
+    """
+    if not match:
+        return "No ProCare (New Lead)"
+
+    ps_engagement = match.get("ps_engagement", "")
+    last_service = match.get("last_service", "")
+    last_parts = match.get("last_parts", "")
+    ytd_service = match.get("ytd_service", 0)
+    ytd_parts = match.get("ytd_parts", 0)
+    has_warranty = deal_info.get("has_warranty", False) if deal_info else False
+
+    # Already has active PM, still show but tag it
+    if has_pm:
+        return "Active PM (Upsell)"
+
+    # Category 2: Warranty customers - they bought with warranty, good PM targets
+    if has_warranty:
+        return "Warranty Customer"
+
+    # Category 4: Parts buyer, no service - "let us handle the service"
+    # This is the key one Nick called out
+    if ps_engagement == "Customer purchases parts from SEC, but mostly manages their own service":
+        return "Parts Only, No Service"
+    # Fallback: has parts activity but no service activity
+    if last_parts and last_parts != "No Purchase" and (last_service == "No Purchase" or not last_service):
+        return "Parts Only, No Service"
+    if ytd_parts > 0 and ytd_service == 0:
+        return "Parts Only, No Service"
+
+    # Category 3: Regular maintenance customers - already bring machines to SEC for service
+    if ps_engagement == "Customer wants SEC to manage Parts and Service for their fleet":
+        return "Full Service (Lock In)"
+    if last_service in ("Hot (0-3 Months)", "Warm (3-6 Months)"):
+        return "Active Service Customer"
+    if last_service in ("Cool (6-12 Months)", "Cold (12-18 Months)"):
+        return "Lapsed Service"
+    if ytd_service > 0:
+        return "Active Service Customer"
+
+    # Category 1 with CRM context
+    return "No ProCare (In CRM)"
+
+
+def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_active_companies=None):
+    """
+    Enrich leads with HubSpot intelligence and assign Lead Categories.
+
+    Lead Categories (Nick's priority tiers):
+    1. No ProCare - machines throwing alerts without coverage
+    2. Warranty Customer - bought with warranty, natural PM transition
+    3. Parts Only, No Service - buys parts, does own service (pitch PM)
+    4. Active/Lapsed Service - already uses SEC service (lock them in with PM)
+    5. Active PM - already has PM (upsell or skip)
+
+    Scoring boosts based on:
+    - CASE classification (relationship health)
+    - Fleet size (bigger = more contract value)
+    - Deal history (repeat buyers are warmer)
+    - Parts/service engagement (parts-only = prime target)
+    - Recency of last purchase
+    """
     if not hs_companies or scored_df.empty:
         scored_df["In HubSpot"] = False
         scored_df["HubSpot Deals"] = 0
         scored_df["Lifecycle"] = ""
+        scored_df["CASE Class"] = ""
+        scored_df["Fleet"] = ""
+        scored_df["Has PM"] = False
+        scored_df["Lead Category"] = "No ProCare (New Lead)"
+        scored_df["Service Status"] = ""
         return scored_df
+
+    deal_history = deal_history or {}
+    pm_active_companies = pm_active_companies or set()
 
     df = scored_df.copy()
     df["cust_upper"] = df["Customer"].str.strip().str.upper()
 
+    # Match each row to HubSpot
     hs_match = []
     hs_deals = []
     hs_lifecycle = []
+    hs_case_class = []
+    hs_fleet = []
+    hs_has_pm = []
+    hs_category = []
+    hs_service_status = []
+    hs_boost = []
+
     for _, row in df.iterrows():
         cust = row["cust_upper"]
-        # Try exact match first, then partial
-        match = hs_companies.get(cust)
-        if not match:
-            for hs_name, hs_data in hs_companies.items():
-                if cust in hs_name or hs_name in cust:
-                    match = hs_data
-                    break
+        match = _match_hubspot_company(cust, hs_companies)
+
         hs_match.append(bool(match))
         hs_deals.append(int(match["deals"]) if match and match.get("deals") else 0)
         hs_lifecycle.append(match["lifecycle"] if match else "")
+        case_class = match["case_class"] if match else ""
+        hs_case_class.append(case_class)
+        fleet = match["fleet_size"] if match else ""
+        hs_fleet.append(fleet)
+
+        has_pm = cust in pm_active_companies
+        hs_has_pm.append(has_pm)
+
+        # Service status from HubSpot
+        svc = match.get("last_service", "") if match else ""
+        hs_service_status.append(svc)
+
+        # Lead category
+        deal_info = deal_history.get(cust, {})
+        category = _classify_lead_category(match, deal_info, False, has_pm, cust)
+        hs_category.append(category)
+
+        # Calculate composite HubSpot boost
+        boost = 0.0
+
+        if match:
+            boost += 0.03  # In CRM
+
+            # CASE classification boost
+            boost += CASE_CLASS_BOOST.get(case_class, 0)
+
+            # Fleet size boost
+            boost += FLEET_SIZE_SCORE.get(fleet, 0)
+
+            # Deal history
+            won = deal_info.get("won", 0)
+            lost = deal_info.get("lost", 0)
+            if won > 0:
+                win_rate = won / max(won + lost, 1)
+                boost += min(win_rate * 0.08, 0.08)
+                if won >= 10:
+                    boost += 0.05
+                elif won >= 5:
+                    boost += 0.03
+                elif won >= 2:
+                    boost += 0.01
+
+            # Recency
+            last_purchase = match.get("last_purchase", "")
+            if last_purchase:
+                try:
+                    lp_date = datetime.strptime(last_purchase[:10], "%Y-%m-%d")
+                    days_ago = (datetime.now() - lp_date).days
+                    if days_ago < 90:
+                        boost += 0.06
+                    elif days_ago < 180:
+                        boost += 0.04
+                    elif days_ago < 365:
+                        boost += 0.02
+                except (ValueError, TypeError):
+                    pass
+
+            # Category-specific boosts
+            if category == "Parts Only, No Service":
+                boost += 0.12  # Prime targets: they trust SEC for parts, pitch service+PM
+            elif category == "Warranty Customer":
+                boost += 0.10  # Natural transition from warranty to PM
+            elif category == "Active Service Customer":
+                boost += 0.08  # Already using SEC service, PM is easy sell
+            elif category == "Full Service (Lock In)":
+                boost += 0.10  # They want full service, PM formalizes it
+            elif category == "Lapsed Service":
+                boost += 0.06  # Used to come in, PM brings them back
+
+            # Penalty: rent-only
+            if fleet == "0 - Rent Only":
+                boost -= 0.10
+
+            # Penalty: already has PM
+            if has_pm:
+                boost -= 0.15
+
+        hs_boost.append(boost)
 
     df["In HubSpot"] = hs_match
     df["HubSpot Deals"] = hs_deals
     df["Lifecycle"] = hs_lifecycle
-    df.drop(columns=["cust_upper"], inplace=True)
+    df["CASE Class"] = hs_case_class
+    df["Fleet"] = hs_fleet
+    df["Has PM"] = hs_has_pm
+    df["Lead Category"] = hs_category
+    df["Service Status"] = hs_service_status
 
-    # Boost score for active HubSpot customers (warm relationship)
-    df.loc[df["In HubSpot"], "Lead Score"] = (df.loc[df["In HubSpot"], "Lead Score"] * 1.05).clip(0, 100).round(1)
-    # Re-tier after boost
+    # Apply the composite boost
+    df["HS Boost"] = hs_boost
+    df["Lead Score"] = (df["Lead Score"] * (1 + df["HS Boost"])).clip(0, 100).round(1)
+
+    # Re-tier
     df["Tier"] = pd.cut(
         df["Lead Score"],
         bins=[0, 35, 50, 65, 100],
@@ -329,6 +595,7 @@ def enrich_leads_with_hubspot(scored_df, hs_companies):
         include_lowest=True,
     )
 
+    df.drop(columns=["cust_upper", "HS Boost"], inplace=True)
     return df
 
 
@@ -496,18 +763,35 @@ def aggregate_customer_leads(scored_df):
     if scored_df.empty:
         return pd.DataFrame()
 
-    agg = scored_df.groupby("Customer").agg(
-        machines=("VIN", "nunique"),
-        total_parts_value=("Parts Value", "sum"),
-        total_labor_hrs=("Labor Hrs", "sum"),
-        avg_hours=("Eng Hrs", "mean"),
-        avg_score=("Lead Score", "mean"),
-        max_score=("Lead Score", "max"),
-        total_annual_pm=("Annual PM Value", "sum"),
-        location=("Location", "first"),
-        models=("Model", lambda x: ", ".join(sorted(set(x)))),
-        categories=("Category", lambda x: ", ".join(sorted(set(x)))),
-    ).reset_index()
+    agg_dict = {
+        "machines": ("VIN", "nunique"),
+        "total_parts_value": ("Parts Value", "sum"),
+        "total_labor_hrs": ("Labor Hrs", "sum"),
+        "avg_hours": ("Eng Hrs", "mean"),
+        "avg_score": ("Lead Score", "mean"),
+        "max_score": ("Lead Score", "max"),
+        "total_annual_pm": ("Annual PM Value", "sum"),
+        "location": ("Location", "first"),
+        "models": ("Model", lambda x: ", ".join(sorted(set(x)))),
+        "categories": ("Category", lambda x: ", ".join(sorted(set(x)))),
+    }
+    # Carry through HubSpot fields if present
+    if "CASE Class" in scored_df.columns:
+        agg_dict["case_class"] = ("CASE Class", "first")
+    if "Fleet" in scored_df.columns:
+        agg_dict["fleet"] = ("Fleet", "first")
+    if "In HubSpot" in scored_df.columns:
+        agg_dict["in_hubspot"] = ("In HubSpot", "first")
+    if "Has PM" in scored_df.columns:
+        agg_dict["has_pm"] = ("Has PM", "first")
+    if "HubSpot Deals" in scored_df.columns:
+        agg_dict["hs_deals"] = ("HubSpot Deals", "first")
+    if "Lead Category" in scored_df.columns:
+        agg_dict["lead_category"] = ("Lead Category", "first")
+    if "Service Status" in scored_df.columns:
+        agg_dict["service_status"] = ("Service Status", "first")
+
+    agg = scored_df.groupby("Customer").agg(**agg_dict).reset_index()
 
     # Customer-level score: weighted by fleet size and total opportunity
     agg["Customer Score"] = (
@@ -740,7 +1024,8 @@ with tab_leads:
         # HubSpot enrichment
         hs_companies = fetch_hubspot_companies()
         if hs_companies:
-            scored = enrich_leads_with_hubspot(scored, hs_companies)
+            deal_history, pm_active = fetch_hubspot_deals()
+            scored = enrich_leads_with_hubspot(scored, hs_companies, deal_history, pm_active)
 
         st.session_state.leads_df = scored
         st.session_state.procare_vins = procare_vins
@@ -751,14 +1036,14 @@ with tab_leads:
             # Summary metrics
             cust_agg = aggregate_customer_leads(scored)
 
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
             with col1:
                 st.metric("Total Machines", len(scored))
             with col2:
                 st.metric("Unique Customers", scored["Customer"].nunique())
             with col3:
-                top_count = len(scored[scored["Tier"] == "Top"])
-                st.metric("Top Tier Leads", top_count)
+                top_count = len(scored[scored["Tier"] == "Top"]) + len(scored[scored["Tier"] == "High"])
+                st.metric("Top + High Leads", top_count)
             with col4:
                 total_pm_opp = scored["Annual PM Value"].sum()
                 st.metric("Total PM Opportunity", f"${total_pm_opp:,.0f}")
@@ -768,6 +1053,12 @@ with tab_leads:
                     st.metric("In HubSpot", f"{hs_count} customers")
                 else:
                     st.metric("ProCare Excluded", len(procare_vins))
+            with col6:
+                if "CASE Class" in scored.columns:
+                    attention_count = scored[scored["CASE Class"].isin(["Needs Attention", "At Risk", "Can't Lose Them", "About to Sleep"])]["Customer"].nunique()
+                    st.metric("Need Attention", f"{attention_count} customers")
+                else:
+                    st.metric("Data Files", "Loaded")
 
             st.divider()
 
@@ -782,11 +1073,25 @@ with tab_leads:
             with col4:
                 min_score = st.slider("Min Lead Score", 0, 100, 50)
 
-            # HubSpot filter if available
-            if "In HubSpot" in scored.columns:
-                hs_filter = st.radio("HubSpot Status", ["All Leads", "In HubSpot Only", "NOT in HubSpot"], horizontal=True)
+            # HubSpot filters if available
+            has_hs = "In HubSpot" in scored.columns
+            if has_hs:
+                fc1, fc2, fc3, fc4 = st.columns(4)
+                with fc1:
+                    lead_cats = sorted([c for c in scored["Lead Category"].unique() if c]) if "Lead Category" in scored.columns else []
+                    filter_lead_cat = st.multiselect("Lead Category", lead_cats) if lead_cats else []
+                with fc2:
+                    hs_filter = st.radio("HubSpot Status", ["All Leads", "In HubSpot Only", "NOT in HubSpot"], horizontal=True)
+                with fc3:
+                    case_classes = sorted([c for c in scored["CASE Class"].unique() if c]) if "CASE Class" in scored.columns else []
+                    filter_case = st.multiselect("CASE Classification", case_classes) if case_classes else []
+                with fc4:
+                    pm_filter = st.radio("PM Status", ["All", "No Active PM", "Has Active PM"], horizontal=True) if "Has PM" in scored.columns else "All"
             else:
                 hs_filter = "All Leads"
+                filter_case = []
+                pm_filter = "All"
+                filter_lead_cat = []
 
             # Apply filters
             display = scored.copy()
@@ -801,6 +1106,14 @@ with tab_leads:
                 display = display[display["In HubSpot"]]
             elif hs_filter == "NOT in HubSpot" and "In HubSpot" in display.columns:
                 display = display[~display["In HubSpot"]]
+            if filter_lead_cat and "Lead Category" in display.columns:
+                display = display[display["Lead Category"].isin(filter_lead_cat)]
+            if filter_case and "CASE Class" in display.columns:
+                display = display[display["CASE Class"].isin(filter_case)]
+            if pm_filter == "No Active PM" and "Has PM" in display.columns:
+                display = display[~display["Has PM"]]
+            elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
+                display = display[display["Has PM"]]
 
             # View toggle
             view = st.radio("View", ["By Customer", "By Machine"], horizontal=True)
@@ -813,12 +1126,21 @@ with tab_leads:
                     st.caption(f"Showing {len(cust_display)} customers")
                     for _, row in cust_display.iterrows():
                         tier = row["Tier"]
+                        # Build subtitle with HubSpot info
+                        subtitle_parts = [row['location'], row['models']]
+                        if "case_class" in row and row.get("case_class"):
+                            subtitle_parts.insert(0, f"CASE: {row['case_class']}")
+                        if "fleet" in row and row.get("fleet"):
+                            subtitle_parts.insert(1, f"Fleet: {row['fleet']}")
 
                         with st.container():
                             c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
                             with c1:
-                                st.markdown(f"**{row['Customer']}**")
-                                st.caption(f"{row['location']} | {row['models']}")
+                                label = f"**{row['Customer']}**"
+                                if "lead_category" in row and row.get("lead_category"):
+                                    label += f"  &nbsp; `{row['lead_category']}`"
+                                st.markdown(label, unsafe_allow_html=True)
+                                st.caption(" | ".join(subtitle_parts))
                             with c2:
                                 st.metric("Machines", int(row["machines"]))
                             with c3:
@@ -832,8 +1154,11 @@ with tab_leads:
             else:  # By Machine
                 st.caption(f"Showing {len(display)} machines")
                 show_cols = ["Lead Score", "Tier", "Customer", "Model", "Category", "Location", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value", "VIN"]
-                if "In HubSpot" in display.columns:
-                    show_cols.insert(3, "In HubSpot")
+                # Insert HubSpot columns after Customer
+                hs_insert_cols = ["Lead Category", "CASE Class", "Fleet", "In HubSpot", "Has PM"]
+                for i, col in enumerate(hs_insert_cols):
+                    if col in display.columns:
+                        show_cols.insert(3 + i, col)
                 show_cols = [c for c in show_cols if c in display.columns]
                 st.dataframe(
                     display[show_cols].reset_index(drop=True),
@@ -845,6 +1170,10 @@ with tab_leads:
                         "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
                         "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
                         "In HubSpot": st.column_config.CheckboxColumn("In HS", default=False),
+                        "Has PM": st.column_config.CheckboxColumn("Has PM", default=False),
+                        "Lead Category": st.column_config.TextColumn("Lead Category", width="medium"),
+                        "CASE Class": st.column_config.TextColumn("CASE Class", width="small"),
+                        "Fleet": st.column_config.TextColumn("Fleet Size", width="small"),
                     },
                 )
 
@@ -862,9 +1191,35 @@ with tab_leads:
 
             # Charts
             st.divider()
+            import plotly.express as px
+
+            # Lead Category breakdown (if HubSpot connected)
+            if "Lead Category" in display.columns:
+                cat_colors = {
+                    "Parts Only, No Service": "#C8102E",
+                    "Warranty Customer": "#E8601C",
+                    "Active Service Customer": "#2F5496",
+                    "Full Service (Lock In)": "#1B7340",
+                    "Lapsed Service": "#F59E0B",
+                    "No ProCare (In CRM)": "#6B7280",
+                    "No ProCare (New Lead)": "#9CA3AF",
+                    "Active PM (Upsell)": "#8B5CF6",
+                }
+                lc_data = display.groupby("Lead Category").agg(
+                    customers=("Customer", "nunique"),
+                    machines=("VIN", "nunique"),
+                    pm_value=("Annual PM Value", "sum"),
+                ).reset_index().sort_values("pm_value", ascending=True)
+                fig = px.bar(lc_data, x="pm_value", y="Lead Category",
+                             orientation="h", title="PM Opportunity by Lead Category",
+                             labels={"pm_value": "Annual PM Value ($)", "Lead Category": ""},
+                             hover_data=["customers", "machines"],
+                             color="Lead Category", color_discrete_map=cat_colors)
+                fig.update_layout(showlegend=False, height=350)
+                st.plotly_chart(fig, use_container_width=True)
+
             col1, col2 = st.columns(2)
             with col1:
-                import plotly.express as px
                 loc_data = display.groupby("Location").agg(
                     machines=("VIN", "nunique"),
                     pm_value=("Annual PM Value", "sum"),
