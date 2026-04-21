@@ -17,7 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 # ─── Page Config ───
-st.set_page_config(page_title="SEC PM Tool", page_icon="🔧", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="SE PM Campaign", page_icon="SE", layout="wide", initial_sidebar_state="expanded")
 
 # ─── Brand ───
 SEC_RED = "#C8102E"
@@ -1328,8 +1328,8 @@ st.markdown("""
 def show_login():
     st.markdown("""
     <div class="login-container">
-        <div class="login-title">PM Calculator</div>
-        <div class="login-subtitle">Southeastern Equipment Co.</div>
+        <div class="login-title">PM Campaign</div>
+        <div class="login-subtitle">2026</div>
         <div class="login-detail">Lead Discovery &bull; PM Quoting &bull; Branch Tracking</div>
     </div>
     """, unsafe_allow_html=True)
