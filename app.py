@@ -1144,16 +1144,16 @@ def generate_pdf(quote_data):
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch, leftMargin=0.75*inch, rightMargin=0.75*inch)
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="SECTitle", fontSize=22, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_RED), spaceAfter=4))
-    styles.add(ParagraphStyle(name="SECSubtitle", fontSize=11, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), spaceAfter=16))
-    styles.add(ParagraphStyle(name="SectionHead", fontSize=13, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_DARK), spaceBefore=16, spaceAfter=8))
+    styles.add(ParagraphStyle(name="SECTitle", fontSize=20, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_RED), spaceAfter=2, leading=24))
+    styles.add(ParagraphStyle(name="SECSubtitle", fontSize=11, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), spaceAfter=10, leading=14))
+    styles.add(ParagraphStyle(name="SectionHead", fontSize=12, fontName="Helvetica-Bold", textColor=colors.HexColor(SEC_DARK), spaceBefore=14, spaceAfter=6))
     styles.add(ParagraphStyle(name="FooterText", fontSize=8, fontName="Helvetica", textColor=colors.HexColor(SEC_GRAY), alignment=TA_CENTER))
 
     elements = []
     elements.append(Paragraph("SOUTHEASTERN EQUIPMENT CO.", styles["SECTitle"]))
     elements.append(Paragraph("Preventive Maintenance Quote", styles["SECSubtitle"]))
     elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor(SEC_RED)))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1, 14))
 
     # Quote info
     info_data = [
@@ -1219,7 +1219,7 @@ def generate_pdf(quote_data):
     t = RLTable(price_data, colWidths=[4.5*inch, 2.3*inch])
     t.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 10),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5496")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(SEC_RED)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("FONTNAME", (0, -2), (-1, -1), "Helvetica-Bold"), ("FONTSIZE", (0, -2), (-1, -1), 12),
