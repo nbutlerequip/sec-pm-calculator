@@ -297,7 +297,7 @@ def fetch_hubspot_deals():
     url = "https://api.hubapi.com/crm/v3/objects/deals/search"
 
     # Track deals per company and PM-active companies
-    deals_by_company = {}  # company_name -> {won, lost, total_won_amount, last_close, has_warranty, warranty_expired}
+    deals_by_company = {}  # company_name -> {won, lost, total_won_amount, last_close, warranty_years, warranty_close}
     pm_active_companies = set()  # company names with active PM deals
 
     try:
@@ -325,7 +325,7 @@ def fetch_hubspot_deals():
                             co_name = dn.split(" - ")[0].strip().upper()
                     if co_name:
                         if co_name not in deals_by_company:
-                            deals_by_company[co_name] = {"won": 0, "lost": 0, "total_won_amount": 0, "last_close": "", "has_warranty": False}
+                            deals_by_company[co_name] = {"won": 0, "lost": 0, "total_won_amount": 0, "last_close": "", "warranty_years": 0, "warranty_close": ""}
                         deals_by_company[co_name][label] += 1
                         amt = float(props.get("amount") or 0)
                         if label == "won":
@@ -333,10 +333,27 @@ def fetch_hubspot_deals():
                         cd = props.get("closedate", "")
                         if cd > deals_by_company[co_name]["last_close"]:
                             deals_by_company[co_name]["last_close"] = cd
-                        # Track warranty status
+                        # Parse warranty duration from warranty fields
                         wtype = (props.get("warranty_type__c") or "").lower()
-                        if label == "won" and wtype and "no warranty" not in wtype and "n/a" not in wtype:
-                            deals_by_company[co_name]["has_warranty"] = True
+                        winfo = (props.get("warranty_information__c") or "").upper()
+                        if label == "won" and wtype and "no warranty" not in wtype and "as is" not in wtype and "n/a" not in wtype:
+                            import re
+                            wyears = 0
+                            # Try to extract years: "3 YEAR", "3 YR", "36 MONTH", "48 MONTHS", "5 YEAR"
+                            yr_match = re.search(r'(\d+)\s*(?:YEAR|YR)', winfo)
+                            mo_match = re.search(r'(\d+)\s*(?:MONTH|MO)', winfo)
+                            if yr_match:
+                                wyears = int(yr_match.group(1))
+                            elif mo_match:
+                                wyears = int(mo_match.group(1)) / 12
+                            elif "STANDARD" in winfo or "STD" in winfo or "FACTORY" in winfo:
+                                wyears = 3  # Default CASE/Kobelco standard is 3yr/3000hr
+                            elif winfo and winfo not in ("", "N/A"):
+                                wyears = 2  # Reasonable default for other warranties
+                            # Keep the longest warranty per company
+                            if wyears > deals_by_company[co_name]["warranty_years"]:
+                                deals_by_company[co_name]["warranty_years"] = wyears
+                                deals_by_company[co_name]["warranty_close"] = cd
 
                 paging = data.get("paging", {}).get("next", {})
                 next_after = paging.get("after")
@@ -413,10 +430,11 @@ def _classify_lead_category(match, deal_info, has_procare_expired, has_pm, cust_
     """
     Assign a lead category based on Nick's priority tiers:
     1. No ProCare Coverage - machine has alerts but no ProCare (base case from scoring)
-    2. Warranty Expiring/Expired - bought equipment with warranty that's aging out
-    3. Regular Maintenance - comes in for service but no PM contract
-    4. Parts Only, No Service - buys parts but handles own service (pitch PM)
-    5. Unknown - in alerts but no HubSpot match
+    2. Warranty Expiring Soon - warranty ends within 6 months (hottest warranty lead)
+    3. Warranty Expired - had warranty, now expired (no coverage, needs PM)
+    4. Regular Maintenance - comes in for service but no PM contract
+    5. Parts Only, No Service - buys parts but handles own service (pitch PM)
+    6. Unknown - in alerts but no HubSpot match
     """
     if not match:
         return "No ProCare (New Lead)"
@@ -426,15 +444,27 @@ def _classify_lead_category(match, deal_info, has_procare_expired, has_pm, cust_
     last_parts = match.get("last_parts", "")
     ytd_service = match.get("ytd_service", 0)
     ytd_parts = match.get("ytd_parts", 0)
-    has_warranty = deal_info.get("has_warranty", False) if deal_info else False
 
     # Already has active PM, still show but tag it
     if has_pm:
         return "Active PM (Upsell)"
 
-    # Category 2: Warranty customers - they bought with warranty, good PM targets
-    if has_warranty:
-        return "Warranty Customer"
+    # Warranty status: expiring soon vs expired vs still active
+    warranty_years = deal_info.get("warranty_years", 0) if deal_info else 0
+    warranty_close = deal_info.get("warranty_close", "") if deal_info else ""
+    if warranty_years > 0 and warranty_close:
+        try:
+            close_dt = datetime.strptime(warranty_close[:10], "%Y-%m-%d")
+            from dateutil.relativedelta import relativedelta
+            expiry_dt = close_dt + relativedelta(years=int(warranty_years), months=int((warranty_years % 1) * 12))
+            days_until = (expiry_dt - datetime.now()).days
+            if days_until < 0:
+                return "Warranty Expired"
+            elif days_until <= 180:
+                return "Warranty Expiring"
+            # else: warranty still active 6+ months out, don't tag as warranty lead
+        except Exception:
+            pass
 
     # Category 4: Parts buyer, no service - "let us handle the service"
     # This is the key one Nick called out
@@ -466,10 +496,11 @@ def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_act
 
     Lead Categories (Nick's priority tiers):
     1. No ProCare - machines throwing alerts without coverage
-    2. Warranty Customer - bought with warranty, natural PM transition
-    3. Parts Only, No Service - buys parts, does own service (pitch PM)
-    4. Active/Lapsed Service - already uses SEC service (lock them in with PM)
-    5. Active PM - already has PM (upsell or skip)
+    2. Warranty Expiring - warranty ends within 6 months (hottest)
+    3. Warranty Expired - had warranty, now expired (needs PM)
+    4. Parts Only, No Service - buys parts, does own service (pitch PM)
+    5. Active/Lapsed Service - already uses SEC service (lock them in with PM)
+    6. Active PM - already has PM (upsell or skip)
 
     Scoring boosts based on:
     - CASE classification (relationship health)
@@ -573,8 +604,10 @@ def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_act
             # Category-specific boosts
             if category == "Parts Only, No Service":
                 boost += 0.12  # Prime targets: they trust SEC for parts, pitch service+PM
-            elif category == "Warranty Customer":
-                boost += 0.10  # Natural transition from warranty to PM
+            elif category == "Warranty Expiring":
+                boost += 0.15  # Hottest warranty lead: coverage ending soon, perfect PM pitch
+            elif category == "Warranty Expired":
+                boost += 0.12  # No coverage right now, needs PM
             elif category == "Active Service Customer":
                 boost += 0.08  # Already using SEC service, PM is easy sell
             elif category == "Full Service (Lock In)":
@@ -680,7 +713,25 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
         deal_info = deal_history.get(hs_name, {})
         deals_won = deal_info.get("won", 0)
         total_won_amount = deal_info.get("total_won_amount", 0)
-        has_warranty = deal_info.get("has_warranty", False)
+        warranty_years = deal_info.get("warranty_years", 0)
+        warranty_close = deal_info.get("warranty_close", "")
+
+        # Calculate warranty status
+        warranty_status = ""  # "", "expiring", "expired", "active"
+        if warranty_years > 0 and warranty_close:
+            try:
+                close_dt = datetime.strptime(warranty_close[:10], "%Y-%m-%d")
+                from dateutil.relativedelta import relativedelta
+                expiry_dt = close_dt + relativedelta(years=int(warranty_years), months=int((warranty_years % 1) * 12))
+                days_until = (expiry_dt - datetime.now()).days
+                if days_until < 0:
+                    warranty_status = "expired"
+                elif days_until <= 180:
+                    warranty_status = "expiring"
+                else:
+                    warranty_status = "active"
+            except Exception:
+                pass
 
         # Determine if this customer has enough signal to be worth showing
         # Need at least SOME indicator: spend, deals, fleet info, or classification
@@ -695,7 +746,7 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             deals_won > 0 or
             fleet not in ("", "0 - Rent Only") or
             case_class != "" or
-            has_warranty
+            warranty_status in ("expiring", "expired")
         )
 
         if not has_signal:
@@ -753,9 +804,11 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
         case_boost = CASE_CLASS_BOOST.get(case_class, 0) * 100
         score += case_boost
 
-        # Warranty customer: natural PM transition
-        if has_warranty:
-            score += 8
+        # Warranty status scoring: expiring soon is the hottest
+        if warranty_status == "expiring":
+            score += 15  # Warranty ending soon, perfect PM timing
+        elif warranty_status == "expired":
+            score += 10  # No coverage now, needs PM
 
         # Recency: recent activity = warmer lead
         last_purchase = data.get("last_purchase", "")
@@ -785,8 +838,10 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
 
         if has_pm:
             lead_cat = "Active PM (Upsell)"
-        elif has_warranty:
-            lead_cat = "Warranty Customer"
+        elif warranty_status == "expiring":
+            lead_cat = "Warranty Expiring"
+        elif warranty_status == "expired":
+            lead_cat = "Warranty Expired"
         elif ps_engagement == "Customer purchases parts from SEC, but mostly manages their own service":
             lead_cat = "Parts Only, No Service"
         elif ytd_parts > 0 and ytd_service == 0:
@@ -1574,18 +1629,6 @@ with tab_leads:
     alerts_df = load_bundled_alerts()
     procare_vins = load_bundled_procare()
 
-    # Let users upload newer files to replace
-    with st.expander("Upload Updated Data Files", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            alerts_file = st.file_uploader("Maintenance Alerts (.xlsx)", type=["xlsx"], key="alerts_upload")
-        with col2:
-            procare_file = st.file_uploader("ProCare Stops (.xlsx)", type=["xlsx"], key="procare_upload")
-        if alerts_file:
-            alerts_df = parse_maintenance_alerts(alerts_file)
-        if procare_file:
-            procare_vins = parse_procare_stops(procare_file)
-
     # Score CASE alert leads
     scored = pd.DataFrame()
     if alerts_df is not None and not alerts_df.empty:
@@ -1834,7 +1877,8 @@ with tab_leads:
             if "Lead Category" in display.columns:
                 cat_colors = {
                     "Parts Only, No Service": "#C8102E",
-                    "Warranty Customer": "#E8601C",
+                    "Warranty Expiring": "#DC2626",
+                    "Warranty Expired": "#E8601C",
                     "Active Service Customer": "#2F5496",
                     "Full Service (Lock In)": "#1B7340",
                     "Lapsed Service": "#F59E0B",
