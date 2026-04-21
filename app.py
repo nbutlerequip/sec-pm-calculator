@@ -1,8 +1,11 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
 import base64
+import requests
 from datetime import datetime, date
+from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -174,6 +177,159 @@ def load_quotes_from_sheet():
         return pd.DataFrame(data) if data else pd.DataFrame()
     except Exception:
         return pd.DataFrame(st.session_state.quotes) if st.session_state.quotes else pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════
+# BUNDLED DATA LOADER
+# ═══════════════════════════════════════════════════════════
+DATA_DIR = Path(__file__).parent / "data"
+
+@st.cache_data(ttl=3600)
+def load_bundled_alerts():
+    """Load maintenance alerts from the bundled data file."""
+    # Try short name first, then original name pattern
+    for pattern in ["alerts.xlsx", "Southeastern Equipment Maintenance Alerts*.xlsx"]:
+        files = sorted(DATA_DIR.glob(pattern))
+        if files:
+            return parse_maintenance_alerts(files[-1])
+    return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def load_bundled_procare():
+    """Load ProCare stops from the bundled data file."""
+    for pattern in ["procare.xlsx", "Southeastern ProCare Stops*.xlsx"]:
+        files = sorted(DATA_DIR.glob(pattern))
+        if files:
+            return parse_procare_stops(files[-1])
+    return set()
+
+
+# ═══════════════════════════════════════════════════════════
+# HUBSPOT ENRICHMENT
+# ═══════════════════════════════════════════════════════════
+HUBSPOT_TOKEN = st.secrets.get("hubspot_token", "")
+
+@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot data...")
+def fetch_hubspot_companies():
+    """Pull company records from HubSpot to cross-reference with leads."""
+    if not HUBSPOT_TOKEN:
+        return {}
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    companies = {}
+    url = "https://api.hubapi.com/crm/v3/objects/companies"
+    params = {
+        "limit": 100,
+        "properties": "name,city,state,industry,hs_lastmodifieddate,lifecyclestage,num_associated_deals",
+    }
+    try:
+        after = None
+        for _ in range(20):  # max 2000 companies
+            if after:
+                params["after"] = after
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            for c in data.get("results", []):
+                props = c.get("properties", {})
+                name = (props.get("name") or "").strip().upper()
+                if name:
+                    companies[name] = {
+                        "hs_id": c["id"],
+                        "city": props.get("city", ""),
+                        "state": props.get("state", ""),
+                        "lifecycle": props.get("lifecyclestage", ""),
+                        "deals": props.get("num_associated_deals", 0),
+                        "last_modified": props.get("hs_lastmodifieddate", ""),
+                    }
+            paging = data.get("paging", {}).get("next", {})
+            after = paging.get("after")
+            if not after:
+                break
+    except Exception:
+        pass
+    return companies
+
+@st.cache_data(ttl=1800, show_spinner="Pulling HubSpot service tickets...")
+def fetch_hubspot_tickets():
+    """Pull service tickets from HubSpot for service spend enrichment."""
+    if not HUBSPOT_TOKEN:
+        return {}
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    tickets_by_company = {}
+    url = "https://api.hubapi.com/crm/v3/objects/tickets"
+    params = {
+        "limit": 100,
+        "properties": "subject,hs_pipeline_stage,createdate,hs_ticket_priority,content",
+    }
+    try:
+        after = None
+        for _ in range(10):  # max 1000 tickets
+            if after:
+                params["after"] = after
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            for t in data.get("results", []):
+                props = t.get("properties", {})
+                subj = (props.get("subject") or "").upper()
+                tickets_by_company[t["id"]] = {
+                    "subject": props.get("subject", ""),
+                    "created": props.get("createdate", ""),
+                    "priority": props.get("hs_ticket_priority", ""),
+                }
+            paging = data.get("paging", {}).get("next", {})
+            after = paging.get("after")
+            if not after:
+                break
+    except Exception:
+        pass
+    return tickets_by_company
+
+def enrich_leads_with_hubspot(scored_df, hs_companies):
+    """Add HubSpot data columns to scored leads."""
+    if not hs_companies or scored_df.empty:
+        scored_df["In HubSpot"] = False
+        scored_df["HubSpot Deals"] = 0
+        scored_df["Lifecycle"] = ""
+        return scored_df
+
+    df = scored_df.copy()
+    df["cust_upper"] = df["Customer"].str.strip().str.upper()
+
+    hs_match = []
+    hs_deals = []
+    hs_lifecycle = []
+    for _, row in df.iterrows():
+        cust = row["cust_upper"]
+        # Try exact match first, then partial
+        match = hs_companies.get(cust)
+        if not match:
+            for hs_name, hs_data in hs_companies.items():
+                if cust in hs_name or hs_name in cust:
+                    match = hs_data
+                    break
+        hs_match.append(bool(match))
+        hs_deals.append(int(match["deals"]) if match and match.get("deals") else 0)
+        hs_lifecycle.append(match["lifecycle"] if match else "")
+
+    df["In HubSpot"] = hs_match
+    df["HubSpot Deals"] = hs_deals
+    df["Lifecycle"] = hs_lifecycle
+    df.drop(columns=["cust_upper"], inplace=True)
+
+    # Boost score for active HubSpot customers (warm relationship)
+    df.loc[df["In HubSpot"], "Lead Score"] = (df.loc[df["In HubSpot"], "Lead Score"] * 1.05).clip(0, 100).round(1)
+    # Re-tier after boost
+    df["Tier"] = pd.cut(
+        df["Lead Score"],
+        bins=[0, 35, 50, 65, 100],
+        labels=["Low", "Medium", "High", "Top"],
+        include_lowest=True,
+    )
+
+    return df
 
 
 # ═══════════════════════════════════════════════════════════
@@ -560,23 +716,34 @@ tab_leads, tab_calc, tab_history, tab_pricing = st.tabs(["Lead Discovery", "PM C
 # ═══════════════════════════════════════════════════════════
 with tab_leads:
     st.subheader("PM Lead Discovery")
-    st.caption("Upload the Case maintenance alerts and ProCare stops files. The algorithm scores every machine without ProCare coverage and ranks the best opportunities.")
+    st.caption("Scores every machine from Case maintenance alerts that does NOT have ProCare coverage. Data auto-loads from the latest files. Upload new files below to refresh.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        alerts_file = st.file_uploader("Maintenance Alerts (.xlsx)", type=["xlsx"], key="alerts_upload")
-    with col2:
-        procare_file = st.file_uploader("ProCare Stops (.xlsx)", type=["xlsx"], key="procare_upload")
+    # Auto-load bundled data
+    alerts_df = load_bundled_alerts()
+    procare_vins = load_bundled_procare()
 
-    if alerts_file:
-        alerts_df = parse_maintenance_alerts(alerts_file)
-        procare_vins = set()
+    # Let users upload newer files to replace
+    with st.expander("Upload Updated Data Files", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            alerts_file = st.file_uploader("Maintenance Alerts (.xlsx)", type=["xlsx"], key="alerts_upload")
+        with col2:
+            procare_file = st.file_uploader("ProCare Stops (.xlsx)", type=["xlsx"], key="procare_upload")
+        if alerts_file:
+            alerts_df = parse_maintenance_alerts(alerts_file)
         if procare_file:
             procare_vins = parse_procare_stops(procare_file)
-            st.session_state.procare_vins = procare_vins
 
+    if alerts_df is not None and not alerts_df.empty:
         scored = score_leads(alerts_df, procare_vins)
+
+        # HubSpot enrichment
+        hs_companies = fetch_hubspot_companies()
+        if hs_companies:
+            scored = enrich_leads_with_hubspot(scored, hs_companies)
+
         st.session_state.leads_df = scored
+        st.session_state.procare_vins = procare_vins
 
         if scored.empty:
             st.warning("No external leads found after filtering out ProCare and internal machines.")
@@ -596,10 +763,11 @@ with tab_leads:
                 total_pm_opp = scored["Annual PM Value"].sum()
                 st.metric("Total PM Opportunity", f"${total_pm_opp:,.0f}")
             with col5:
-                if procare_file:
-                    st.metric("ProCare Machines", len(procare_vins))
+                if "In HubSpot" in scored.columns:
+                    hs_count = scored[scored["In HubSpot"]]["Customer"].nunique()
+                    st.metric("In HubSpot", f"{hs_count} customers")
                 else:
-                    st.metric("ProCare File", "Not uploaded")
+                    st.metric("ProCare Excluded", len(procare_vins))
 
             st.divider()
 
@@ -614,6 +782,12 @@ with tab_leads:
             with col4:
                 min_score = st.slider("Min Lead Score", 0, 100, 50)
 
+            # HubSpot filter if available
+            if "In HubSpot" in scored.columns:
+                hs_filter = st.radio("HubSpot Status", ["All Leads", "In HubSpot Only", "NOT in HubSpot"], horizontal=True)
+            else:
+                hs_filter = "All Leads"
+
             # Apply filters
             display = scored.copy()
             if filter_tier:
@@ -623,6 +797,10 @@ with tab_leads:
             if filter_category:
                 display = display[display["Category"].isin(filter_category)]
             display = display[display["Lead Score"] >= min_score]
+            if hs_filter == "In HubSpot Only" and "In HubSpot" in display.columns:
+                display = display[display["In HubSpot"]]
+            elif hs_filter == "NOT in HubSpot" and "In HubSpot" in display.columns:
+                display = display[~display["In HubSpot"]]
 
             # View toggle
             view = st.radio("View", ["By Customer", "By Machine"], horizontal=True)
@@ -635,8 +813,6 @@ with tab_leads:
                     st.caption(f"Showing {len(cust_display)} customers")
                     for _, row in cust_display.iterrows():
                         tier = row["Tier"]
-                        css_class = "lead-top" if tier == "Top" else ("lead-high" if tier == "High" else "lead-med")
-                        tier_color = "#C8102E" if tier == "Top" else ("#F59E0B" if tier == "High" else ("#3B82F6" if tier == "Medium" else "#6B7280"))
 
                         with st.container():
                             c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
@@ -656,6 +832,8 @@ with tab_leads:
             else:  # By Machine
                 st.caption(f"Showing {len(display)} machines")
                 show_cols = ["Lead Score", "Tier", "Customer", "Model", "Category", "Location", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value", "VIN"]
+                if "In HubSpot" in display.columns:
+                    show_cols.insert(3, "In HubSpot")
                 show_cols = [c for c in show_cols if c in display.columns]
                 st.dataframe(
                     display[show_cols].reset_index(drop=True),
@@ -666,8 +844,21 @@ with tab_leads:
                         "Annual PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
                         "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
                         "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
+                        "In HubSpot": st.column_config.CheckboxColumn("In HS", default=False),
                     },
                 )
+
+            # Export leads
+            st.divider()
+            col_exp1, col_exp2, _ = st.columns([1, 1, 3])
+            with col_exp1:
+                csv_data = display.to_csv(index=False).encode("utf-8")
+                st.download_button("Export Leads (CSV)", data=csv_data, file_name=f"SEC_PM_Leads_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
+            with col_exp2:
+                cust_csv = aggregate_customer_leads(display)
+                if not cust_csv.empty:
+                    cust_csv_data = cust_csv.to_csv(index=False).encode("utf-8")
+                    st.download_button("Export by Customer (CSV)", data=cust_csv_data, file_name=f"SEC_PM_Leads_Customers_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
 
             # Charts
             st.divider()
@@ -696,6 +887,8 @@ with tab_leads:
                              color_discrete_sequence=["#2F5496"])
                 fig.update_layout(showlegend=False, height=400)
                 st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No data files found. Upload maintenance alerts above or add files to the data/ folder in the repo.")
 
 
 # ═══════════════════════════════════════════════════════════
