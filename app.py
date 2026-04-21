@@ -140,8 +140,8 @@ if "branch" not in st.session_state:
     st.session_state.branch = None
 if "branch_name" not in st.session_state:
     st.session_state.branch_name = None
-if "rep_name" not in st.session_state:
-    st.session_state.rep_name = None
+if "login_month" not in st.session_state:
+    st.session_state.login_month = None
 
 # ─── Google Sheets ───
 def get_gsheet_connection():
@@ -1290,21 +1290,24 @@ def show_login():
             branch_map[label] = num
         selected = st.selectbox("Branch", options, label_visibility="collapsed")
 
-        st.markdown("#### Your Name")
-        rep_name = st.text_input("Name", label_visibility="collapsed", placeholder="First Last")
+        st.markdown("#### Month")
+        month_options = ["January", "February", "March", "April", "May", "June",
+                         "July", "August", "September", "October", "November", "December"]
+        current_month_idx = datetime.now().month - 1
+        selected_month = st.selectbox("Month", month_options, index=current_month_idx, label_visibility="collapsed")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         if st.button("Start", use_container_width=True, type="primary"):
-            if selected and rep_name.strip():
+            if selected:
                 branch_id = branch_map[selected]
                 st.session_state.branch = branch_id
                 st.session_state.branch_name = BRANCHES[branch_id]
-                st.session_state.rep_name = rep_name.strip()
+                st.session_state.login_month = selected_month
                 st.session_state.page = "dashboard"
                 st.rerun()
             else:
-                st.warning("Pick your branch and enter your name to continue.")
+                st.warning("Pick your branch to continue.")
 
         st.markdown("<br><br>", unsafe_allow_html=True)
         if st.button("Admin Dashboard", use_container_width=True):
@@ -1344,8 +1347,8 @@ def show_admin_login():
             if st.button("Login", use_container_width=True, type="primary"):
                 if password == ADMIN_PASSWORD:
                     st.session_state.page = "admin"
-                    st.session_state.rep_name = "Admin"
                     st.session_state.branch_name = "All Branches"
+                    st.session_state.login_month = "All"
                     st.rerun()
                 else:
                     st.error("Incorrect password")
@@ -1370,7 +1373,7 @@ def show_admin_dashboard():
             st.session_state.page = "login"
             st.session_state.branch = None
             st.session_state.branch_name = None
-            st.session_state.rep_name = None
+            st.session_state.login_month = None
             st.rerun()
 
     # Load tracking data from Google Sheets
@@ -1393,15 +1396,24 @@ def show_admin_dashboard():
 
     tracking_df = pd.DataFrame(tracking_data) if tracking_data else pd.DataFrame()
 
+    # Month filter for admin
+    month_options = ["All", "January", "February", "March", "April", "May", "June",
+                     "July", "August", "September", "October", "November", "December"]
+    admin_month = st.selectbox("Filter by Month", month_options, index=0)
+
+    filtered_df = tracking_df.copy()
+    if admin_month != "All" and not filtered_df.empty and "Month" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["Month"] == admin_month]
+
     # Summary metrics
     st.markdown("### Program Overview")
     col1, col2, col3, col4 = st.columns(4)
 
-    if not tracking_df.empty and "Status" in tracking_df.columns:
-        total_tracked = len(tracking_df)
-        called = len(tracking_df[tracking_df["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])])
-        quoted = len(tracking_df[tracking_df["Status"].isin(["Quoted", "Sold"])])
-        sold = len(tracking_df[tracking_df["Status"] == "Sold"])
+    if not filtered_df.empty and "Status" in filtered_df.columns:
+        total_tracked = len(filtered_df)
+        called = len(filtered_df[filtered_df["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])])
+        quoted = len(filtered_df[filtered_df["Status"].isin(["Quoted", "Sold"])])
+        sold = len(filtered_df[filtered_df["Status"] == "Sold"])
     else:
         total_tracked = called = quoted = sold = 0
 
@@ -1421,8 +1433,8 @@ def show_admin_dashboard():
     for region_name, branch_ids in REGIONS.items():
         region_branches = [BRANCHES[bid] for bid in branch_ids if bid in BRANCHES]
 
-        if not tracking_df.empty and "Branch" in tracking_df.columns:
-            region_df = tracking_df[tracking_df["Branch"].isin(region_branches)]
+        if not filtered_df.empty and "Branch" in filtered_df.columns:
+            region_df = filtered_df[filtered_df["Branch"].isin(region_branches)]
             r_total = len(region_df)
             r_called = len(region_df[region_df["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])]) if "Status" in region_df.columns else 0
             r_quoted = len(region_df[region_df["Status"].isin(["Quoted", "Sold"])]) if "Status" in region_df.columns else 0
@@ -1436,8 +1448,8 @@ def show_admin_dashboard():
         branch_rows = []
         for bid in branch_ids:
             bname = BRANCHES.get(bid, "")
-            if not tracking_df.empty and "Branch" in tracking_df.columns:
-                bdf = tracking_df[tracking_df["Branch"] == bname]
+            if not filtered_df.empty and "Branch" in filtered_df.columns:
+                bdf = filtered_df[filtered_df["Branch"] == bname]
                 b_called = len(bdf[bdf["Status"].isin(["Called", "Quoted", "Sold", "In Progress"])]) if "Status" in bdf.columns else 0
                 b_quoted = len(bdf[bdf["Status"].isin(["Quoted", "Sold"])]) if "Status" in bdf.columns else 0
                 b_sold = len(bdf[bdf["Status"] == "Sold"]) if "Status" in bdf.columns else 0
@@ -1450,17 +1462,17 @@ def show_admin_dashboard():
 
     st.markdown("---")
 
-    # Rep leaderboard
-    st.markdown("### Rep Leaderboard")
-    if not tracking_df.empty and "Rep" in tracking_df.columns and "Status" in tracking_df.columns:
-        rep_stats = tracking_df.groupby("Rep").agg(
+    # Monthly breakdown
+    st.markdown("### Activity by Month")
+    if not tracking_df.empty and "Month" in tracking_df.columns and "Status" in tracking_df.columns:
+        month_stats = tracking_df.groupby("Month").agg(
             Calls=("Status", lambda x: x.isin(["Called", "Quoted", "Sold", "In Progress"]).sum()),
             Quotes=("Status", lambda x: x.isin(["Quoted", "Sold"]).sum()),
             Sold=("Status", lambda x: (x == "Sold").sum()),
         ).reset_index().sort_values("Sold", ascending=False)
-        st.dataframe(rep_stats, use_container_width=True, hide_index=True)
+        st.dataframe(month_stats, use_container_width=True, hide_index=True)
     else:
-        st.info("No tracking data yet. Reps will appear here once they start logging activity.")
+        st.info("No tracking data yet. Activity will appear here once branches start logging.")
 
     # Quote history from main sheet
     st.markdown("---")
@@ -1487,7 +1499,7 @@ def get_tracking_sheet():
                 return ws
         # Create it if missing
         tracking_ws = sheet.spreadsheet.add_worksheet(title="Tracking", rows=5000, cols=10)
-        tracking_ws.append_row(["Date", "Branch", "Rep", "Customer", "Status", "Notes", "PM Value"], value_input_option="USER_ENTERED")
+        tracking_ws.append_row(["Date", "Month", "Branch", "Customer", "Status", "Notes", "PM Value"], value_input_option="USER_ENTERED")
         return tracking_ws
     except Exception:
         return None
@@ -1500,8 +1512,8 @@ def save_tracking_entry(customer_name, status, notes="", pm_value=0):
     try:
         row = [
             datetime.now().strftime("%Y-%m-%d %H:%M"),
+            st.session_state.login_month or "",
             st.session_state.branch_name or "",
-            st.session_state.rep_name or "",
             customer_name,
             status,
             notes,
@@ -1533,7 +1545,7 @@ elif st.session_state.page == "admin":
 st.markdown(f"""
 <div class="header-bar">
     <span class="branch-name">{st.session_state.branch_name} &mdash; PM Tool</span>
-    <span class="rep-info">{st.session_state.rep_name}</span>
+    <span class="rep-info">{st.session_state.login_month or ""}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1543,7 +1555,7 @@ with col_head_r:
         st.session_state.page = "login"
         st.session_state.branch = None
         st.session_state.branch_name = None
-        st.session_state.rep_name = None
+        st.session_state.login_month = None
         st.rerun()
 
 # ═══════════════════════════════════════════════════════════
@@ -1910,7 +1922,7 @@ with tab_calc:
     with col2:
         branch = st.selectbox("Branch", [""] + BRANCH_NAMES, index=(BRANCH_NAMES.index(st.session_state.branch_name) + 1) if st.session_state.branch_name in BRANCH_NAMES else 0)
     with col3:
-        rep = st.text_input("Service Rep", value=st.session_state.rep_name or "")
+        rep = st.text_input("Service Rep")
 
     col1, col2 = st.columns(2)
     with col1:
