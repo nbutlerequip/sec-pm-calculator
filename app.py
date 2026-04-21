@@ -42,89 +42,131 @@ REGIONS = {
 
 ADMIN_PASSWORD = "SEpm2026"
 
-# ─── Makes & Models ───
-MAKES_MODELS = {
-    "Case": {
-        "Compact Track Loader": ["TR270", "TR270B", "TR310", "TR310B", "TR320", "TR340", "TR340B", "TV370", "TV370B", "TV380", "TV450", "TV450B", "TV620", "TV620B"],
-        "Skid Steer": ["SR130", "SR160B", "SR175", "SR210", "SR210B", "SR220", "SR240", "SR240B", "SR250", "SR270", "SR270B", "SV185", "SV185B", "SV250", "SV280", "SV280B", "SV300", "SV340"],
-        "Excavator (Mini)": ["CX17C", "CX26", "CX26C", "CX30", "CX30C", "CX37", "CX37C", "CX42", "CX50B", "CX55B", "CX57", "CX60", "CX60C", "CX75C"],
-        "Excavator (Standard)": ["CX130", "CX130D", "CX145", "CX145C", "CX145D", "CX160", "CX160D", "CX170", "CX210", "CX210C", "CX210D", "CX220", "CX350", "CX500"],
-        "Backhoe": ["580", "580K", "580N", "580SK", "580SL", "580SM", "580SMII", "580SN", "580SNW", "580SNWT", "580SV", "590", "590N", "590SM", "590SN"],
-        "Wheel Loader": ["221F", "221FHS", "321", "321F", "321FHS", "521D", "521EXT", "521F", "521G", "521GXT", "621", "621B", "621C", "621D", "621EXR", "621F", "621FXT", "621G", "621R", "621XR", "721", "721B", "721FXT", "721G", "821", "821F", "821G", "921G"],
-        "Dozer": ["650", "650L", "650M", "750M", "850", "850M", "1150", "1150K", "1150M"],
-        "Grader": ["670A", "720A", "836C"],
-        "Trencher": ["660"],
-    },
-    "Kobelco": {
-        "Excavator (Mini)": ["SK17SR", "SK25", "SK35", "SK35SR", "SK45", "SK55", "SK55SRX"],
-        "Excavator (Standard)": ["SK80", "SK85", "SK85CS", "SK85SR", "SK130", "SK140", "SK140SR", "SK170", "SK210", "SK210D", "SK210LC", "SK230", "SK260LC", "SK300", "SK300LC", "SK330", "SK350"],
-    },
-    "Bomag": {
-        "Roller/Compaction": ["BPR45/45", "BW120", "BW120AD", "BW120SL", "BW135AD-5", "BW138", "BW161", "BW177", "BW190", "BW190AD-5", "BW211", "BW211PD", "BW213", "BW266"],
-    },
-    "Kubota": {
-        "Compact Track Loader": ["SVL65", "SVL75", "SVL95", "SVL97"],
-        "Skid Steer": ["SSV75"],
-        "Excavator (Mini)": ["KX033", "KX040", "KX057", "KX121"],
-        "Excavator (Standard)": ["KX080"],
-    },
-    "Gradall": {"Excavator (Standard)": ["XL3100", "XL3100IV", "XL3100V"]},
-    "Komatsu": {"Excavator (Standard)": ["PC128", "PC170"]},
-    "Caterpillar": {"Dozer": ["D4G", "D8T"]},
-    "New Holland": {"Backhoe": ["LB75", "LB90"]},
-    "JLG": {"Aerial Lift": ["25AM", "660SJ"], "Telehandler": ["1255"]},
-    "Ditch Witch": {"Trencher": ["TRX300"]},
-    "KM International": {"Paver": ["KM4000", "KM8000TEDD"]},
-    "Link-Belt": {"Excavator (Standard)": ["130X4", "145X4", "160X4", "210X4", "245X4", "300X4", "350X4"]},
-    "John Deere": {
-        "Dozer": ["450K", "550K", "650K", "700K", "850K"],
-        "Excavator (Standard)": ["135G", "210G", "245G", "300G", "350G"],
-        "Wheel Loader": ["344L", "444L", "524L", "544L", "624L", "644L", "744L", "844L"],
-    },
-    "Volvo": {
-        "Excavator (Standard)": ["EC140", "EC160", "EC200", "EC220", "EC250", "EC300", "EC350"],
-        "Wheel Loader": ["L60H", "L70H", "L90H", "L110H", "L120H", "L150H"],
-    },
+# ─── PM Dealsheet Pricing (from PM Contract Dealsheet Rev 3.0) ───
+# Each model: {brand, cost_i, cost_1, cost_2, cost_3, cost_s, hr_i, hr_1, hr_2, hr_3, hr_s}
+PM_DEALSHEET = {
+    # === CASE (44 models) ===
+    "CX12D": {"brand":"Case","cost_i":518,"cost_1":0,"cost_2":1207,"cost_3":2166,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX19D Cab": {"brand":"Case","cost_i":518,"cost_1":0,"cost_2":1207,"cost_3":2166,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX30D Cab": {"brand":"Case","cost_i":760,"cost_1":485,"cost_2":1175,"cost_3":2040,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX34D Cab": {"brand":"Case","cost_i":760,"cost_1":485,"cost_2":1175,"cost_3":2040,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX38D Cab": {"brand":"Case","cost_i":825,"cost_1":550,"cost_2":1235,"cost_3":2105,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX42D Cab": {"brand":"Case","cost_i":890,"cost_1":0,"cost_2":1360,"cost_3":2280,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX50D Cab": {"brand":"Case","cost_i":820,"cost_1":0,"cost_2":1395,"cost_3":2800,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX60D": {"brand":"Case","cost_i":855,"cost_1":0,"cost_2":1420,"cost_3":2815,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX70E": {"brand":"Case","cost_i":825,"cost_1":0,"cost_2":1175,"cost_3":2580,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX85E": {"brand":"Case","cost_i":825,"cost_1":0,"cost_2":1175,"cost_3":2580,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX90E": {"brand":"Case","cost_i":825,"cost_1":0,"cost_2":1175,"cost_3":2580,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "TR270B": {"brand":"Case","cost_i":215,"cost_1":0,"cost_2":1025,"cost_3":1550,"cost_s":2595,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "TR310B": {"brand":"Case","cost_i":215,"cost_1":0,"cost_2":1025,"cost_3":1550,"cost_s":2575,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "TR340B": {"brand":"Case","cost_i":215,"cost_1":0,"cost_2":1045,"cost_3":1650,"cost_s":2694,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "TV370B": {"brand":"Case","cost_i":145,"cost_1":0,"cost_2":946,"cost_3":1540,"cost_s":2590,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "TV450B": {"brand":"Case","cost_i":105,"cost_1":0,"cost_2":982,"cost_3":2105,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "TV620B": {"brand":"Case","cost_i":175,"cost_1":0,"cost_2":1625,"cost_3":2640,"cost_s":2860,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "DL550": {"brand":"Case","cost_i":175,"cost_1":0,"cost_2":1905,"cost_3":2815,"cost_s":4000,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "SR175B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":885,"cost_3":2640,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SR210B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":895,"cost_3":1550,"cost_s":2545,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "SR240B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":870,"cost_3":1685,"cost_s":2680,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "SR270B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":870,"cost_3":1770,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SV270B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":870,"cost_3":1770,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SV185B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":700,"cost_3":2480,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SV280B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":870,"cost_3":1685,"cost_s":2680,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "SV340B": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":960,"cost_3":1890,"cost_s":2880,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "575N": {"brand":"Case","cost_i":1005,"cost_1":0,"cost_2":585,"cost_3":2680,"cost_s":2780,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "580SV": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":570,"cost_3":2495,"cost_s":2550,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "580SN": {"brand":"Case","cost_i":670,"cost_1":0,"cost_2":905,"cost_3":3280,"cost_s":3410,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "590SN": {"brand":"Case","cost_i":670,"cost_1":0,"cost_2":905,"cost_3":3280,"cost_s":3410,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "586H": {"brand":"Case","cost_i":590,"cost_1":0,"cost_2":580,"cost_3":2630,"cost_s":2795,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "588H": {"brand":"Case","cost_i":590,"cost_1":0,"cost_2":580,"cost_3":2630,"cost_s":2795,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "SL12": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL12 TR": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL15": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL23": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL27": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL27 TR": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL35 TR": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SL50 TR": {"brand":"Case","cost_i":950,"cost_1":575,"cost_2":2835,"cost_3":6750,"cost_s":0,"hr_i":50,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "21F": {"brand":"Case","cost_i":470,"cost_1":0,"cost_2":566,"cost_3":2090,"cost_s":2437,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
+    "221F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
+    "321F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
+    "421F": {"brand":"Case","cost_i":758,"cost_1":0,"cost_2":1080,"cost_3":2820,"cost_s":3625,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    # === KOBELCO (19 models) ===
+    "SK17SR-6E": {"brand":"Kobelco","cost_i":885,"cost_1":0,"cost_2":930,"cost_3":1260,"cost_s":0,"hr_i":250,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK26SR-7": {"brand":"Kobelco","cost_i":745,"cost_1":0,"cost_2":700,"cost_3":1070,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK35SR-7": {"brand":"Kobelco","cost_i":550,"cost_1":0,"cost_2":755,"cost_3":1200,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK45SRX-7": {"brand":"Kobelco","cost_i":600,"cost_1":0,"cost_2":685,"cost_3":1270,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK55SRX-7": {"brand":"Kobelco","cost_i":600,"cost_1":0,"cost_2":800,"cost_3":1270,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK75SR-7": {"brand":"Kobelco","cost_i":720,"cost_1":0,"cost_2":925,"cost_3":1700,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK85CS-7": {"brand":"Kobelco","cost_i":620,"cost_1":0,"cost_2":1050,"cost_3":1700,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK130LC-11": {"brand":"Kobelco","cost_i":650,"cost_1":0,"cost_2":1050,"cost_3":2100,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK140SR-7": {"brand":"Kobelco","cost_i":840,"cost_1":0,"cost_2":1675,"cost_3":2080,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "ED160-7": {"brand":"Kobelco","cost_i":900,"cost_1":0,"cost_2":1170,"cost_3":2010,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK170LC-11": {"brand":"Kobelco","cost_i":990,"cost_1":0,"cost_2":2290,"cost_3":2085,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK210LC-11": {"brand":"Kobelco","cost_i":1010,"cost_1":0,"cost_2":1500,"cost_3":2250,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK230SR-7": {"brand":"Kobelco","cost_i":1010,"cost_1":0,"cost_2":1700,"cost_3":2250,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK260LC-11": {"brand":"Kobelco","cost_i":1010,"cost_1":0,"cost_2":1520,"cost_3":2250,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK270SR-7": {"brand":"Kobelco","cost_i":930,"cost_1":0,"cost_2":1730,"cost_3":2250,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK300LC-11": {"brand":"Kobelco","cost_i":1060,"cost_1":0,"cost_2":1360,"cost_3":2050,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK350LC-11": {"brand":"Kobelco","cost_i":1060,"cost_1":0,"cost_2":1550,"cost_3":2110,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK380SRLC-7": {"brand":"Kobelco","cost_i":1385,"cost_1":0,"cost_2":1950,"cost_3":2370,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "SK520LC-11": {"brand":"Kobelco","cost_i":2390,"cost_1":0,"cost_2":3050,"cost_3":3120,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    # === DEVELON (12 models) ===
+    "DA45": {"brand":"Develon","cost_i":2895,"cost_1":1575,"cost_2":5495,"cost_3":5495,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DD100": {"brand":"Develon","cost_i":470,"cost_1":1250,"cost_2":2625,"cost_3":2625,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DD130": {"brand":"Develon","cost_i":470,"cost_1":1250,"cost_2":2625,"cost_3":2625,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX35Z-7": {"brand":"Develon","cost_i":450,"cost_1":1300,"cost_2":1925,"cost_3":1925,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX50Z-7": {"brand":"Develon","cost_i":450,"cost_1":1425,"cost_2":1965,"cost_3":1965,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX63-7": {"brand":"Develon","cost_i":530,"cost_1":1425,"cost_2":1965,"cost_3":1965,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX89R-7": {"brand":"Develon","cost_i":450,"cost_1":1350,"cost_2":1965,"cost_3":1965,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX140LC-7": {"brand":"Develon","cost_i":450,"cost_1":1425,"cost_2":2125,"cost_3":2125,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX140LCR-7": {"brand":"Develon","cost_i":450,"cost_1":1425,"cost_2":2125,"cost_3":2125,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DX170LC-5": {"brand":"Develon","cost_i":450,"cost_1":1425,"cost_2":2175,"cost_3":2175,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DL220-7": {"brand":"Develon","cost_i":525,"cost_1":1175,"cost_2":3265,"cost_3":3265,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    "DL250-7": {"brand":"Develon","cost_i":525,"cost_1":1175,"cost_2":3265,"cost_3":3265,"cost_s":0,"hr_i":50,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":0},
+    # === BOMAG (12 models) ===
+    "BMP8500": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":550,"cost_3":1065,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW11RH": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":780,"cost_3":1585,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW120AD": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":490,"cost_3":1470,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW138AD": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":490,"cost_3":1375,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW141": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":490,"cost_3":1525,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW177": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":740,"cost_3":1670,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW190": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":740,"cost_3":1760,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW211": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":895,"cost_3":2180,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW900": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":340,"cost_3":895,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BW90AD": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":340,"cost_3":895,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BF200C": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":635,"cost_3":2130,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "BF300C": {"brand":"Bomag","cost_i":0,"cost_1":0,"cost_2":635,"cost_3":2130,"cost_s":0,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
 }
 
-# ─── PM Pricing (will be replaced when Jarred provides averages) ───
+# Build brand -> model list for dropdowns
+PM_BRANDS = {}
+for model, info in PM_DEALSHEET.items():
+    brand = info["brand"]
+    if brand not in PM_BRANDS:
+        PM_BRANDS[brand] = []
+    PM_BRANDS[brand].append(model)
+
+# Approximate annual PM values by category (for lead scoring only, not quoting)
 PM_PRICING = {
-    "Compact Track Loader": {"annual": 2900, "parts_avg": 1160, "labor_avg": 1740},
-    "Skid Steer":           {"annual": 2700, "parts_avg": 1080, "labor_avg": 1620},
-    "Excavator (Mini)":     {"annual": 2400, "parts_avg": 960,  "labor_avg": 1440},
-    "Excavator (Standard)": {"annual": 4800, "parts_avg": 1920, "labor_avg": 2880},
-    "Backhoe":              {"annual": 3200, "parts_avg": 1280, "labor_avg": 1920},
-    "Wheel Loader":         {"annual": 4200, "parts_avg": 1680, "labor_avg": 2520},
-    "Dozer":                {"annual": 5200, "parts_avg": 2080, "labor_avg": 3120},
-    "Grader":               {"annual": 5500, "parts_avg": 2200, "labor_avg": 3300},
-    "Roller/Compaction":    {"annual": 2800, "parts_avg": 1120, "labor_avg": 1680},
-    "Paver":                {"annual": 6500, "parts_avg": 2600, "labor_avg": 3900},
-    "Milling Machine":      {"annual": 7200, "parts_avg": 2880, "labor_avg": 4320},
-    "Telehandler":          {"annual": 2200, "parts_avg": 880,  "labor_avg": 1320},
-    "Forklift":             {"annual": 1800, "parts_avg": 720,  "labor_avg": 1080},
-    "Dump Truck":           {"annual": 3800, "parts_avg": 1520, "labor_avg": 2280},
-    "Aerial Lift":          {"annual": 2000, "parts_avg": 800,  "labor_avg": 1200},
-    "Generator":            {"annual": 1500, "parts_avg": 600,  "labor_avg": 900},
-    "Trencher":             {"annual": 3200, "parts_avg": 1280, "labor_avg": 1920},
-    "Scissor Lift":         {"annual": 1600, "parts_avg": 640,  "labor_avg": 960},
-    "Other":                {"annual": 3200, "parts_avg": 1280, "labor_avg": 1920},
+    "Compact Track Loader": {"annual": 2900}, "Skid Steer": {"annual": 2700},
+    "Excavator (Mini)": {"annual": 2400}, "Excavator (Standard)": {"annual": 4800},
+    "Backhoe": {"annual": 3200}, "Wheel Loader": {"annual": 4200},
+    "Dozer": {"annual": 5200}, "Roller/Compaction": {"annual": 2800},
+    "Other": {"annual": 3200},
 }
 
-# Map Case model names from alerts to PM categories
+# Map CASE alert model names to categories (for lead scoring)
 MODEL_TO_CATEGORY = {
     "580SN": "Backhoe", "580SN WT": "Backhoe", "580N": "Backhoe", "590SN": "Backhoe",
     "TV370B": "Compact Track Loader", "TV450B": "Compact Track Loader", "TV620B": "Compact Track Loader",
     "TR270B": "Compact Track Loader", "TR310B": "Compact Track Loader", "TR340B": "Compact Track Loader",
-    "TL100": "Compact Track Loader",
     "221F EVOLUTION": "Wheel Loader", "321F EVOLUTION": "Wheel Loader",
-    "521G": "Wheel Loader", "621G": "Wheel Loader", "721G": "Wheel Loader", "821G": "Wheel Loader", "921G": "Wheel Loader", "1021G": "Wheel Loader",
+    "521G": "Wheel Loader", "621G": "Wheel Loader", "721G": "Wheel Loader", "821G": "Wheel Loader",
     "SV280B": "Skid Steer", "SV340B": "Skid Steer",
     "CX42D": "Excavator (Mini)", "CX50D": "Excavator (Mini)", "CX37D": "Excavator (Mini)",
-    "CX145D SR": "Excavator (Standard)", "CX210D": "Excavator (Standard)", "CX220E": "Excavator (Standard)",
-    "CX260E": "Excavator (Standard)", "CX350D": "Excavator (Standard)", "CX190E": "Excavator (Standard)",
-    "CX170E": "Excavator (Standard)", "CX140E": "Excavator (Standard)",
-    "DL550": "Dozer", "650M": "Dozer", "850M": "Dozer", "750M": "Dozer", "1650M": "Dozer", "1150M": "Dozer",
-    "SL35 TR": "Compact Track Loader", "651G": "Wheel Loader",
+    "CX145D SR": "Excavator (Standard)", "CX210D": "Excavator (Standard)",
+    "DL550": "Dozer", "650M": "Dozer", "850M": "Dozer",
+    "SL35 TR": "Compact Track Loader",
 }
 
 SERVICE_TYPES = ["Field", "Shop"]
@@ -172,13 +214,10 @@ def save_quote_to_sheet(quote_data):
             quote_data.get("date", ""), quote_data.get("customer_name", ""),
             quote_data.get("branch", ""), quote_data.get("rep", ""),
             quote_data.get("service_type", ""), quote_data.get("make", ""),
-            quote_data.get("model", ""), quote_data.get("category", ""),
-            quote_data.get("serial", ""), quote_data.get("machine_age", 0),
-            quote_data.get("machine_hours", 0), quote_data.get("travel_time", 0),
-            quote_data.get("parts_cost", 0), quote_data.get("labor_cost", 0),
+            quote_data.get("model", ""), quote_data.get("serial", ""),
+            quote_data.get("hours_requested", 0), quote_data.get("travel_time", 0),
             quote_data.get("travel_cost", 0), quote_data.get("total_cost", 0),
-            quote_data.get("annual_pm_price", 0), quote_data.get("margin_pct", 0),
-            quote_data.get("notes", ""),
+            quote_data.get("annual_pm_price", 0), quote_data.get("notes", ""),
         ]
         sheet.append_row(row, value_input_option="USER_ENTERED")
         st.session_state.quotes.append(quote_data)
@@ -1318,16 +1357,14 @@ def generate_pdf(quote_data):
 
     make = quote_data.get("make", "")
     model = quote_data.get("model", "")
-    cat = quote_data.get("category", "")
     serial = quote_data.get("serial", "")
-    age = quote_data.get("machine_age", 0)
-    hrs = quote_data.get("machine_hours", 0)
+    hrs_req = quote_data.get("hours_requested", 0)
 
     right_data = [
         [Paragraph("<b>MACHINE DETAILS</b>", styles["BoxLabel"])],
         [Paragraph(f"{make} {model}" if make else " ", styles["BoxValue"])],
-        [Paragraph(f"{cat}", styles["SmallNote"])],
-        [Paragraph(f"<b>Serial:</b> {serial}  |  <b>Age:</b> {age} yr  |  <b>Hours:</b> {hrs:,}", styles["SmallNote"])],
+        [Paragraph(f"<b>Serial:</b> {serial}" if serial else " ", styles["SmallNote"])],
+        [Paragraph(f"<b>Hours Requested:</b> {hrs_req:,}", styles["SmallNote"])],
         [Paragraph(" ", styles["SmallNote"])],
     ]
     right_t = RLTable(right_data, colWidths=[half_w])
@@ -1348,40 +1385,37 @@ def generate_pdf(quote_data):
     elements.append(outer)
     elements.append(Spacer(1, 16))
 
-    # ── Pricing table ──
-    parts_cost = quote_data.get("parts_cost", 0)
-    labor_cost = quote_data.get("labor_cost", 0)
+    # ── Service interval pricing table ──
+    intervals = quote_data.get("intervals", [])
     travel_cost = quote_data.get("travel_cost", 0)
-    total = quote_data.get("total_cost", 0)
     annual = quote_data.get("annual_pm_price", 0)
 
-    price_data = [
-        ["Description", "Amount"],
-        ["Estimated Parts", f"${parts_cost:,.2f}"],
-        ["Estimated Labor / Service", f"${labor_cost:,.2f}"],
-    ]
+    price_data = [["Service", "Hour Interval", "Qty", "Cost (Per)", "Subtotal"]]
+    for iv in intervals:
+        price_data.append([
+            iv["name"], f"{iv['hours']:,} hr", str(iv["qty"]),
+            f"${iv['cost_per']:,.0f}", f"${iv['subtotal']:,.0f}",
+        ])
     if travel_cost > 0:
-        price_data.append(["Travel", f"${travel_cost:,.2f}"])
-    price_data.append(["", ""])
-    price_data.append(["Total Estimated Cost", f"${total:,.2f}"])
-    price_data.append(["Annual PM Contract Price", f"${annual:,.2f}"])
+        price_data.append(["Travel", "", "", "", f"${travel_cost:,.0f}"])
+    price_data.append(["", "", "", "", ""])
+    price_data.append(["PM Contract Total", "", "", "", f"${annual:,.0f}"])
 
-    t = RLTable(price_data, colWidths=[usable_w * 0.65, usable_w * 0.35])
+    col_widths = [usable_w * 0.30, usable_w * 0.18, usable_w * 0.10, usable_w * 0.18, usable_w * 0.24]
+    t = RLTable(price_data, colWidths=col_widths)
     t.setStyle(TableStyle([
         # Header row
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(SEC_SLATE)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
         # Body rows
-        ("FONTNAME", (0, 1), (-1, -3), "Helvetica"), ("FONTSIZE", (0, 1), (-1, -3), 10),
+        ("FONTNAME", (0, 1), (-1, -2), "Helvetica"), ("FONTSIZE", (0, 1), (-1, -2), 10),
         ("TOPPADDING", (0, 1), (-1, -1), 6), ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
-        ("LINEBELOW", (0, 1), (-1, -4), 0.25, colors.HexColor("#DDDDDD")),
-        # Separator before totals
-        ("LINEBELOW", (0, -3), (-1, -3), 0.75, colors.HexColor(SEC_SLATE)),
-        # Total row
-        ("FONTNAME", (0, -2), (-1, -2), "Helvetica-Bold"), ("FONTSIZE", (0, -2), (-1, -2), 10),
-        # Annual PM row (highlight)
+        ("LINEBELOW", (0, 1), (-1, -3), 0.25, colors.HexColor("#DDDDDD")),
+        # Separator before total
+        ("LINEBELOW", (0, -2), (-1, -2), 0.75, colors.HexColor(SEC_SLATE)),
+        # Total row (highlight)
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"), ("FONTSIZE", (0, -1), (-1, -1), 12),
         ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor(SEC_RED)),
         ("LINEBELOW", (0, -1), (-1, -1), 1.5, colors.HexColor(SEC_RED)),
@@ -1402,49 +1436,64 @@ def generate_pdf(quote_data):
 
 
 # ─── Helpers ───
-def get_category_for_model(make, model):
-    make_data = MAKES_MODELS.get(make, {})
-    for category, models in make_data.items():
-        if model in models:
-            return category
-    return "Other"
+def get_models_for_brand(brand):
+    """Get sorted model list for a brand from the dealsheet."""
+    return sorted(PM_BRANDS.get(brand, []))
 
-def get_models_for_make(make):
-    make_data = MAKES_MODELS.get(make, {})
-    all_models = []
-    for models in make_data.values():
-        all_models.extend(models)
-    return sorted(set(all_models))
+def calculate_pm_cost(model_key, hours_requested):
+    """Calculate PM contract cost using real dealsheet interval pricing.
+    Returns breakdown of each service interval, quantities, and total.
+    """
+    ds = PM_DEALSHEET.get(model_key)
+    if not ds:
+        return None
 
-def calculate_pm_cost(category, hours, age, travel_minutes, service_type):
-    pricing = PM_PRICING.get(category, PM_PRICING["Other"])
-    base_parts = pricing["parts_avg"]
-    base_labor = pricing["labor_avg"]
+    intervals = []
+    total = 0
 
-    hours_per_year = hours / max(age, 1)
-    if hours_per_year > 2000: hours_mult = 1.4
-    elif hours_per_year > 1500: hours_mult = 1.2
-    elif hours_per_year > 1000: hours_mult = 1.0
-    elif hours_per_year > 500: hours_mult = 0.85
-    else: hours_mult = 0.7
+    # Initial service (one-time)
+    if ds["hr_i"] and ds["cost_i"]:
+        intervals.append({"name": "Initial Service", "hours": ds["hr_i"], "qty": 1, "cost_per": ds["cost_i"], "subtotal": ds["cost_i"]})
+        total += ds["cost_i"]
 
-    if age > 15: age_mult = 1.25
-    elif age > 10: age_mult = 1.15
-    elif age > 5: age_mult = 1.05
-    else: age_mult = 1.0
+    # Interval 1 (e.g. 250hr) - only some models have this
+    if ds["hr_1"] and ds["cost_1"]:
+        # Count how many Interval 1 services occur, minus those covered by Interval 2
+        n1_total = (hours_requested - 1) // ds["hr_1"] if ds["hr_1"] > 0 else 0
+        n2_total = (hours_requested - 1) // ds["hr_2"] if ds["hr_2"] > 0 else 0
+        n1_net = max(n1_total - n2_total, 0)
+        if n1_net > 0:
+            intervals.append({"name": f"Interval 1 ({ds['hr_1']}hr)", "hours": ds["hr_1"], "qty": n1_net, "cost_per": ds["cost_1"], "subtotal": n1_net * ds["cost_1"]})
+            total += n1_net * ds["cost_1"]
 
-    parts_cost = round(base_parts * hours_mult * age_mult, 2)
-    labor_cost = round(base_labor * hours_mult, 2)
-    travel_cost = round((travel_minutes / 60) * 225 * 2, 2) if service_type == "Field" and travel_minutes > 0 else 0
+    # Interval 2 (typically 500hr)
+    if ds["hr_2"] and ds["cost_2"]:
+        n2_total = (hours_requested - 1) // ds["hr_2"] if ds["hr_2"] > 0 else 0
+        n3_total = (hours_requested - 1) // ds["hr_3"] if ds["hr_3"] > 0 else 0
+        n2_net = max(n2_total - n3_total, 0)
+        if n2_net > 0:
+            intervals.append({"name": f"Interval 2 ({ds['hr_2']}hr)", "hours": ds["hr_2"], "qty": n2_net, "cost_per": ds["cost_2"], "subtotal": n2_net * ds["cost_2"]})
+            total += n2_net * ds["cost_2"]
 
-    total_cost = parts_cost + labor_cost + travel_cost
-    annual_price = round(total_cost * 1.15, 2)
+    # Interval 3 (typically 1000hr)
+    if ds["hr_3"] and ds["cost_3"]:
+        n3_total = (hours_requested - 1) // ds["hr_3"] if ds["hr_3"] > 0 else 0
+        if n3_total > 0:
+            intervals.append({"name": f"Interval 3 ({ds['hr_3']}hr)", "hours": ds["hr_3"], "qty": n3_total, "cost_per": ds["cost_3"], "subtotal": n3_total * ds["cost_3"]})
+            total += n3_total * ds["cost_3"]
+
+    # Specialty service (one-time at specific hour mark)
+    if ds["hr_s"] and ds["cost_s"]:
+        n_s = (hours_requested - 1) // ds["hr_s"] if ds["hr_s"] > 0 else 0
+        if n_s > 0:
+            intervals.append({"name": f"Specialty ({ds['hr_s']}hr)", "hours": ds["hr_s"], "qty": n_s, "cost_per": ds["cost_s"], "subtotal": n_s * ds["cost_s"]})
+            total += n_s * ds["cost_s"]
 
     return {
-        "parts_cost": parts_cost, "labor_cost": labor_cost, "travel_cost": travel_cost,
-        "total_cost": total_cost, "annual_pm_price": annual_price,
-        "margin_pct": round((1 - total_cost / annual_price) * 100, 1) if annual_price > 0 else 0,
-        "hours_mult": hours_mult, "age_mult": age_mult,
+        "intervals": intervals,
+        "total_cost": total,
+        "brand": ds["brand"],
+        "model": model_key,
     }
 
 
@@ -2125,76 +2174,73 @@ with tab_calc:
 
     col1, col2 = st.columns(2)
     with col1:
-        make = st.selectbox("Make", [""] + sorted(MAKES_MODELS.keys()) + ["Other"])
-    if make and make != "Other" and make in MAKES_MODELS:
-        with col2:
-            model = st.selectbox("Model", [""] + get_models_for_make(make) + ["Other / Not Listed"])
-    else:
-        with col2:
-            model = st.text_input("Model (type in)")
-
-    auto_category = None
-    if make and make != "Other" and model and model != "Other / Not Listed":
-        auto_category = get_category_for_model(make, model)
+        make = st.selectbox("Make", [""] + sorted(PM_BRANDS.keys()))
+    with col2:
+        if make and make in PM_BRANDS:
+            model = st.selectbox("Model", [""] + get_models_for_brand(make))
+        else:
+            model = ""
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        if auto_category and auto_category != "Other":
-            st.text_input("Category (auto)", value=auto_category, disabled=True)
-            category = auto_category
-        else:
-            category = st.selectbox("Machine Category", [""] + sorted(PM_PRICING.keys()))
-    with col2:
         serial = st.text_input("Serial Number")
+    with col2:
+        hours_requested = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3)
     with col3:
         pass
-
-    col1, col2 = st.columns(2)
-    with col1:
-        machine_age = st.number_input("Machine Age (years)", min_value=0, max_value=50, value=0, step=1)
-    with col2:
-        machine_hours = st.number_input("Current Hours", min_value=0, max_value=100000, value=0, step=100)
 
     st.divider()
     notes = st.text_area("Notes", placeholder="Machine condition, special requirements, etc.", height=80)
 
     st.divider()
-    can_calc = bool(category and make)
+    can_calc = bool(make and model and model in PM_DEALSHEET)
 
-    if st.button("Calculate PM Estimate", type="primary", use_container_width=True, disabled=not can_calc):
-        result = calculate_pm_cost(
-            category=category, hours=machine_hours,
-            age=machine_age if machine_age > 0 else 1,
-            travel_minutes=travel_time if service_type == "Field" else 0,
-            service_type=service_type,
-        )
-        st.session_state.current_quote = {
-            "date": datetime.now().strftime("%m/%d/%Y"),
-            "customer_name": customer_name, "branch": branch, "rep": rep,
-            "service_type": service_type, "make": make,
-            "model": model if model != "Other / Not Listed" else "",
-            "category": category, "serial": serial,
-            "machine_age": machine_age, "machine_hours": machine_hours,
-            "travel_time": travel_time if service_type == "Field" else 0,
-            "notes": notes, **result,
-        }
+    if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not can_calc):
+        result = calculate_pm_cost(model, hours_requested)
+        if result:
+            travel_cost = round((travel_time / 60) * 225 * 2, 2) if service_type == "Field" and travel_time > 0 else 0
+            st.session_state.current_quote = {
+                "date": datetime.now().strftime("%m/%d/%Y"),
+                "customer_name": customer_name, "branch": branch, "rep": rep,
+                "service_type": service_type, "make": make,
+                "model": model, "serial": serial,
+                "hours_requested": hours_requested,
+                "travel_time": travel_time if service_type == "Field" else 0,
+                "travel_cost": travel_cost,
+                "notes": notes,
+                "intervals": result["intervals"],
+                "total_cost": result["total_cost"],
+                "annual_pm_price": result["total_cost"] + travel_cost,
+            }
 
     if st.session_state.current_quote:
         q = st.session_state.current_quote
         st.divider()
-        st.subheader("PM Estimate")
+        st.subheader("PM Contract Pricing")
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown(f'<div class="metric-card"><div class="label">Parts</div><div class="value">${q["parts_cost"]:,.0f}</div></div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown(f'<div class="metric-card"><div class="label">Labor</div><div class="value">${q["labor_cost"]:,.0f}</div></div>', unsafe_allow_html=True)
-        with col3:
-            st.markdown(f'<div class="metric-card"><div class="label">Travel</div><div class="value">${q["travel_cost"]:,.0f}</div></div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown(f'<div class="metric-card"><div class="label">Annual PM Price</div><div class="value" style="color:#C8102E;">${q["annual_pm_price"]:,.0f}</div></div>', unsafe_allow_html=True)
+        # Show interval breakdown table
+        if "intervals" in q and q["intervals"]:
+            interval_rows = []
+            for iv in q["intervals"]:
+                interval_rows.append({
+                    "Service": iv["name"],
+                    "Hour Interval": f"{iv['hours']:,} hr",
+                    "Qty": iv["qty"],
+                    "Cost (Per)": f"${iv['cost_per']:,.0f}",
+                    "Subtotal": f"${iv['subtotal']:,.0f}",
+                })
+            st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
 
-        st.caption(f"Cost: ${q['total_cost']:,.2f} | Margin: {q['margin_pct']}% | Hours mult: {q['hours_mult']}x | Age factor: {q['age_mult']}x")
+        # Travel cost if field service
+        travel_cost = q.get("travel_cost", 0)
+        if travel_cost > 0:
+            st.markdown(f"**Travel:** ${travel_cost:,.0f}")
+
+        # Total
+        st.markdown(f"""<div class="metric-card" style="margin-top:12px;">
+            <div class="label">Total PM Contract Price ({q.get('hours_requested', 0):,} hours)</div>
+            <div class="value" style="color:#C8102E;">${q['annual_pm_price']:,.0f}</div>
+        </div>""", unsafe_allow_html=True)
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -2205,11 +2251,10 @@ with tab_calc:
         with col2:
             if st.button("Save Quote", use_container_width=True, type="secondary"):
                 saved = save_quote_to_sheet(q)
-                # Auto-log to Tracking sheet so it shows in Discovery and Admin Dashboard
                 cust = q.get("customer_name", "")
                 pm_val = q.get("annual_pm_price", 0)
                 if cust:
-                    save_tracking_entry(cust, "Quoted", f"{q.get('make','')} {q.get('model','')} - {q.get('category','')}", pm_val)
+                    save_tracking_entry(cust, "Quoted", f"{q.get('make','')} {q.get('model','')}", pm_val)
                 st.success("Quote saved to Google Sheets" if saved else "Quote saved locally (Sheets not connected)")
         with col3:
             if st.button("Clear / New Quote", use_container_width=True):
@@ -2232,21 +2277,18 @@ with tab_history:
         with col2:
             fr = st.multiselect("Rep", sorted(df["rep"].unique()) if "rep" in df.columns else [])
         with col3:
-            fc = st.multiselect("Category", sorted(df["category"].unique()) if "category" in df.columns else [])
+            fm = st.multiselect("Make", sorted(df["make"].unique()) if "make" in df.columns else [])
 
         filt = df.copy()
         if fb: filt = filt[filt["branch"].isin(fb)]
         if fr: filt = filt[filt["rep"].isin(fr)]
-        if fc: filt = filt[filt["category"].isin(fc)]
+        if fm: filt = filt[filt["make"].isin(fm)]
 
         if not filt.empty and "annual_pm_price" in filt.columns:
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             with c1: st.metric("Quotes", len(filt))
             with c2: st.metric("Total Value", f"${filt['annual_pm_price'].sum():,.0f}")
             with c3: st.metric("Avg Value", f"${filt['annual_pm_price'].mean():,.0f}")
-            with c4:
-                if "margin_pct" in filt.columns:
-                    st.metric("Avg Margin", f"{filt['margin_pct'].mean():.1f}%")
 
         st.dataframe(filt, use_container_width=True, hide_index=True)
 
@@ -2260,9 +2302,9 @@ with tab_history:
                     fig.update_layout(showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
             with col2:
-                if "category" in filt.columns:
-                    cd = filt.groupby("category")["annual_pm_price"].sum().reset_index()
-                    fig = px.bar(cd, x="category", y="annual_pm_price", title="By Category", color_discrete_sequence=["#2F5496"])
+                if "make" in filt.columns:
+                    md = filt.groupby("make")["annual_pm_price"].sum().reset_index()
+                    fig = px.bar(md, x="make", y="annual_pm_price", title="By Make", color_discrete_sequence=["#2F5496"])
                     fig.update_layout(showlegend=False, xaxis_tickangle=-45)
                     st.plotly_chart(fig, use_container_width=True)
 
