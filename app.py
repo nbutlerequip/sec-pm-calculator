@@ -279,7 +279,7 @@ def fetch_hubspot_companies():
         "properties": ",".join([
             "name", "city", "state", "lifecyclestage", "num_associated_deals",
             "case_customer_classification", "case_ucc_prospect_classification",
-            "fleet_size__c", "account_stage__c", "annualrevenue",
+            "fleet_size__c", "account_stage__c", "annualrevenue", "description",
             "eda_last_purchase_date", "hs_lastmodifieddate",
             "parts___service_engagement", "last_service_purchase",
             "last_parts_purchase", "last_parts_invoice_date__c",
@@ -318,6 +318,7 @@ def fetch_hubspot_companies():
                         "last_parts_date": props.get("last_parts_invoice_date__c", ""),
                         "ytd_service": float(props.get("sa_ytd_charges__c") or 0),
                         "ytd_parts": float(props.get("oe_ytd_charges__c") or 0),
+                        "description": props.get("description", ""),
                     }
             paging = data.get("paging", {}).get("next", {})
             after = paging.get("after")
@@ -364,8 +365,11 @@ def fetch_hubspot_deals():
                             co_name = dn.split(" - ")[0].strip().upper()
                     if co_name:
                         if co_name not in deals_by_company:
-                            deals_by_company[co_name] = {"won": 0, "lost": 0, "total_won_amount": 0, "last_close": "", "warranty_years": 0, "warranty_close": ""}
+                            deals_by_company[co_name] = {"won": 0, "lost": 0, "total_won_amount": 0, "last_close": "", "warranty_years": 0, "warranty_close": "", "deal_names": ""}
                         deals_by_company[co_name][label] += 1
+                        dn = props.get("dealname", "")
+                        if dn:
+                            deals_by_company[co_name]["deal_names"] += f" {dn}"
                         amt = float(props.get("amount") or 0)
                         if label == "won":
                             deals_by_company[co_name]["total_won_amount"] += amt
@@ -2195,16 +2199,38 @@ with tab_leads:
                 case_class = (data.get("case_class", "") or "").lower()
                 if case_class and case_class not in ("", "competitor", "competitive"):
                     return True
-                # Check prospect classification
+                # Check prospect classification for any of the 4 brands
                 prospect_class = (data.get("prospect_class", "") or "").lower()
-                if prospect_class and "case" in prospect_class or "kobelco" in prospect_class:
-                    return True
-                # Check deal names for brand/model keywords
+                if prospect_class:
+                    for brand in ("case", "kobelco", "develon", "bomag", "doosan"):
+                        if brand in prospect_class:
+                            return True
+                # Check if they have won deals through SEC (SEC only sells these 4 brands)
                 deal_info = deal_history.get(hs_name.upper(), {})
                 if deal_info.get("won", 0) > 0:
-                    # If they have won deals, they bought equipment from SEC
-                    # SEC only sells the 4 brands, so any won deal = target brand customer
                     return True
+                # Parts or service spend means they buy from SEC = owns our brands
+                ytd_service = data.get("ytd_service", 0) or 0
+                ytd_parts = data.get("ytd_parts", 0) or 0
+                if ytd_service > 0 or ytd_parts > 0:
+                    return True
+                # Recent service or parts purchase history
+                last_svc = data.get("last_service", "") or ""
+                last_parts = data.get("last_parts", "") or ""
+                last_parts_date = data.get("last_parts_date", "") or ""
+                if last_svc or last_parts or last_parts_date:
+                    return True
+                # Lifecycle stage is customer (HubSpot marks them as a customer)
+                lifecycle = (data.get("lifecycle", "") or "").lower()
+                if lifecycle == "customer":
+                    return True
+                # Check deal names and descriptions for brand/model keywords
+                deal_names = (deal_info.get("deal_names", "") or "").lower()
+                desc = (data.get("description", "") or "").lower()
+                combined_text = f"{deal_names} {desc} {hs_name.lower()}"
+                for kw in brand_keywords:
+                    if kw in combined_text:
+                        return True
                 return False
 
             mask = hs_only_leads["Customer"].apply(lambda c: _is_target_brand_customer(str(c).strip()))
