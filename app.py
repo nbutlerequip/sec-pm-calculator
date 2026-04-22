@@ -147,27 +147,26 @@ for model, info in PM_DEALSHEET.items():
     PM_BRANDS[brand].append(model)
 
 # Approximate annual PM values by category (for lead scoring only, not quoting)
-PM_PRICING = {
-    "Compact Track Loader": {"annual": 2900}, "Skid Steer": {"annual": 2700},
-    "Excavator (Mini)": {"annual": 2400}, "Excavator (Standard)": {"annual": 4800},
-    "Backhoe": {"annual": 3200}, "Wheel Loader": {"annual": 4200},
-    "Dozer": {"annual": 5200}, "Roller/Compaction": {"annual": 2800},
-    "Other": {"annual": 3200},
-}
-
-# Map CASE alert model names to categories (for lead scoring)
-MODEL_TO_CATEGORY = {
-    "580SN": "Backhoe", "580SN WT": "Backhoe", "580N": "Backhoe", "590SN": "Backhoe",
-    "TV370B": "Compact Track Loader", "TV450B": "Compact Track Loader", "TV620B": "Compact Track Loader",
-    "TR270B": "Compact Track Loader", "TR310B": "Compact Track Loader", "TR340B": "Compact Track Loader",
-    "221F EVOLUTION": "Wheel Loader", "321F EVOLUTION": "Wheel Loader",
-    "521G": "Wheel Loader", "621G": "Wheel Loader", "721G": "Wheel Loader", "821G": "Wheel Loader",
-    "SV280B": "Skid Steer", "SV340B": "Skid Steer",
-    "CX42D": "Excavator (Mini)", "CX50D": "Excavator (Mini)", "CX37D": "Excavator (Mini)",
-    "CX145D SR": "Excavator (Standard)", "CX210D": "Excavator (Standard)",
-    "DL550": "Dozer", "650M": "Dozer", "850M": "Dozer",
-    "SL35 TR": "Compact Track Loader",
-}
+def match_model_to_dealsheet(alert_model):
+    """Match a CASE alert model name to a PM_DEALSHEET key.
+    Handles suffixes like EVOLUTION, HS, EP, WT, and Cab variants.
+    Returns the dealsheet key or None if no match.
+    """
+    if not alert_model or str(alert_model).strip() in ("", "Total"):
+        return None
+    m = str(alert_model).strip()
+    # Exact match
+    if m in PM_DEALSHEET:
+        return m
+    # Strip common suffixes
+    base = m.replace(" EVOLUTION", "").replace(" HS", "").replace(" EP", "").replace(" WT", "").strip()
+    if base in PM_DEALSHEET:
+        return base
+    # Try adding " Cab" (CX mini excavators)
+    cab = base + " Cab"
+    if cab in PM_DEALSHEET:
+        return cab
+    return None
 
 SERVICE_TYPES = ["Field", "Shop"]
 
@@ -926,7 +925,7 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             "Source": "HubSpot",
             "Location": data.get("city", "") or "",
             "Model": "",
-            "Category": "",
+            "Dealsheet Model": None,
             "VIN": "",
             "Eng Hrs": 0,
             "Stop": "",
@@ -982,33 +981,16 @@ def parse_procare_stops(file):
     machines["VIN"] = machines["VinHrs"].apply(lambda x: str(x).split(" - ")[0].strip())
     return set(machines["VIN"].unique())
 
-def get_pm_category(model_name):
-    """Map a Case model to PM pricing category."""
-    if not model_name:
-        return "Other"
-    model_upper = str(model_name).upper().strip()
-    # Direct lookup
-    for k, v in MODEL_TO_CATEGORY.items():
-        if k.upper() == model_upper:
-            return v
-    # Fuzzy
-    if any(x in model_upper for x in ["580", "590", "LB"]):
-        return "Backhoe"
-    if any(x in model_upper for x in ["TV", "TR", "SVL", "TL"]):
-        return "Compact Track Loader"
-    if any(x in model_upper for x in ["SR", "SV", "SSV"]):
-        return "Skid Steer"
-    if any(x in model_upper for x in ["21F", "21G", "21B", "21C", "21D", "21R", "21X"]):
-        return "Wheel Loader"
-    if any(x in model_upper for x in ["CX1", "CX2", "CX3", "CX5", "SK1", "SK2", "SK3"]):
-        return "Excavator (Standard)"
-    if any(x in model_upper for x in ["CX3", "CX4", "CX5", "CX6", "CX7", "SK17", "SK25", "SK35", "SK45", "SK55"]):
-        return "Excavator (Mini)"
-    if any(x in model_upper for x in ["50M", "50L", "50K", "DL", "D4", "D5", "D6", "D8", "1650"]):
-        return "Dozer"
-    if any(x in model_upper for x in ["BW", "BPR"]):
-        return "Roller/Compaction"
-    return "Other"
+def get_dealsheet_pm_value(alert_model, eng_hours):
+    """Calculate real PM value for a machine using dealsheet pricing and actual hours."""
+    ds_key = match_model_to_dealsheet(alert_model)
+    if not ds_key:
+        return 0.0, None
+    hrs = max(int(eng_hours or 0), 500)  # Minimum 500 hrs for estimate
+    result = calculate_pm_cost(ds_key, hrs)
+    if result:
+        return float(result["total_cost"]), ds_key
+    return 0.0, None
 
 def score_leads(alerts_df, procare_vins):
     """
@@ -1040,9 +1022,15 @@ def score_leads(alerts_df, procare_vins):
     if df.empty:
         return df
 
-    # Add PM category
-    df["Category"] = df["Model"].apply(get_pm_category)
-    df["Annual PM Value"] = df["Category"].apply(lambda c: PM_PRICING.get(c, PM_PRICING["Other"])["annual"])
+    # Match models to dealsheet and calculate real PM values
+    ds_results = df.apply(lambda r: get_dealsheet_pm_value(r["Model"], r["Eng Hrs"]), axis=1)
+    df["Annual PM Value"] = ds_results.apply(lambda x: x[0])
+    df["Dealsheet Model"] = ds_results.apply(lambda x: x[1])
+
+    # Filter to only machines that match the dealsheet (4 target brands)
+    df = df[df["Dealsheet Model"].notna()].copy()
+    if df.empty:
+        return df
 
     # ── Score components (0-100 scale each) ──
 
@@ -1090,9 +1078,10 @@ def score_leads(alerts_df, procare_vins):
         lambda n: min(100, 40 + (n - 1) * 10)
     ).clip(0, 100)
 
-    # Annual PM value score: bigger machines = more contract value
-    max_annual = max(PM_PRICING.values(), key=lambda x: x["annual"])["annual"]
-    df["value_score"] = (df["Annual PM Value"] / max_annual * 100)
+    # Annual PM value score: real dealsheet value relative to the max in this set
+    max_annual = df["Annual PM Value"].quantile(0.95) if len(df) > 10 else df["Annual PM Value"].max()
+    max_annual = max(max_annual, 1)
+    df["value_score"] = (df["Annual PM Value"] / max_annual * 100).clip(0, 100)
 
     # ── Weighted composite score ──
     df["Lead Score"] = (
@@ -1130,7 +1119,7 @@ def aggregate_customer_leads(scored_df):
         "total_annual_pm": ("Annual PM Value", "sum"),
         "location": ("Location", "first"),
         "models": ("Model", lambda x: ", ".join(sorted(set(m for m in x if m))) if any(m for m in x) else ""),
-        "categories": ("Category", lambda x: ", ".join(sorted(set(c for c in x if c))) if any(c for c in x) else ""),
+        "dealsheet_models": ("Dealsheet Model", lambda x: ", ".join(sorted(set(str(m) for m in x if m and str(m) != "None"))) if any(m for m in x) else ""),
     }
     # Carry through HubSpot fields if present
     if "CASE Class" in scored_df.columns:
@@ -2108,7 +2097,7 @@ with tab_leads:
             st.caption(f"Showing {len(display)} leads")
             show_cols = ["Lead Score", "Tier", "Source", "Customer", "Lead Category", "CASE Class", "Fleet", "Location"]
             # Add CASE-specific columns
-            show_cols += ["Model", "Category", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value"]
+            show_cols += ["Model", "Dealsheet Model", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value"]
             # Add spend columns if present
             if "Total Spend" in display.columns:
                 show_cols.insert(show_cols.index("Parts Value"), "Total Spend")
@@ -2215,15 +2204,15 @@ with tab_leads:
                     st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                cat_filtered = display[display["Category"].notna() & (display["Category"] != "")]
-                if not cat_filtered.empty:
-                    cat_data = cat_filtered.groupby("Category").agg(
+                ds_filtered = display[display["Dealsheet Model"].notna() & (display["Dealsheet Model"] != "")]
+                if not ds_filtered.empty:
+                    ds_data = ds_filtered.groupby("Dealsheet Model").agg(
                         customers=("Customer", "nunique"),
                         pm_value=("Annual PM Value", "sum"),
-                    ).reset_index()
-                    fig = px.bar(cat_data.sort_values("pm_value", ascending=True), x="pm_value", y="Category",
-                                 orientation="h", title="PM Opportunity by Machine Category",
-                                 labels={"pm_value": "Annual PM Value ($)", "Category": ""},
+                    ).reset_index().sort_values("pm_value", ascending=True).tail(15)
+                    fig = px.bar(ds_data, x="pm_value", y="Dealsheet Model",
+                                 orientation="h", title="PM Opportunity by Model",
+                                 labels={"pm_value": "Annual PM Value ($)", "Dealsheet Model": ""},
                                  color_discrete_sequence=["#2F5496"])
                     fig.update_layout(showlegend=False, height=400)
                     st.plotly_chart(fig, use_container_width=True)
