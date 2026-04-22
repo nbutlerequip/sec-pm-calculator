@@ -2187,15 +2187,31 @@ with tab_leads:
         # Filter HubSpot-only leads to customers tied to our 4 brands
         if not hs_only_leads.empty:
             target_brands = {"case", "kobelco", "develon", "bomag"}
+            # Model prefixes that are specific enough to not false-match
             brand_keywords = [
-                "case", "kobelco", "develon", "bomag",
-                "cx", "dx", "sv", "sk", "bw", "bf",  # model prefixes
-                "321", "521", "580", "590", "650", "750", "850",  # common CASE models
+                "kobelco", "develon", "bomag", "doosan",
+                "case ce", "case construction",
+                # CASE model prefixes (with enough context to avoid false matches)
+                "cx80", "cx130", "cx160", "cx210", "cx220", "cx240", "cx250",
+                "cx300", "cx350", "cx370", "cx490", "cx500", "cx750", "cx800",
+                "dx55", "dx60", "dx140", "dx225", "dx235", "dx255", "dx300", "dx350", "dx380", "dx420", "dx490", "dx530",
+                "sv185", "sv208", "sv215", "sv250", "sv280", "sv340",
+                "580ev", "580n", "580sn", "590sn",
+                "321f", "521g", "621g", "721g", "821g", "921g",
+                "650m", "750m", "850m",
+                "tv450", "tr270", "tr310", "tr320", "tr340",
+                # Kobelco models
+                "sk55", "sk75", "sk140", "sk170", "sk210", "sk230", "sk260",
+                "sk300", "sk350", "sk390", "sk490", "sk500", "sk850",
+                # Bomag models
+                "bw120", "bw145", "bw177", "bw190", "bw206", "bw211", "bw213",
+                "bw219", "bw226", "bw900",
+                "bf200", "bf300", "bf600", "bf700", "bf800",
             ]
             def _is_target_brand_customer(hs_name):
                 """Check if this HubSpot customer is associated with our 4 dealsheet brands."""
                 data = hs_companies.get(hs_name.upper(), {})
-                # Check CASE classification (if set, they bought CASE/Kobelco/etc from SEC)
+                # Check CASE classification (if set, they're tagged for CASE/Kobelco/etc)
                 case_class = (data.get("case_class", "") or "").lower()
                 if case_class and case_class not in ("", "competitor", "competitive"):
                     return True
@@ -2205,29 +2221,14 @@ with tab_leads:
                     for brand in ("case", "kobelco", "develon", "bomag", "doosan"):
                         if brand in prospect_class:
                             return True
-                # Check if they have won deals through SEC (SEC only sells these 4 brands)
+                # Won deals = bought equipment from SEC (SEC only sells these 4 brands)
                 deal_info = deal_history.get(hs_name.upper(), {})
                 if deal_info.get("won", 0) > 0:
                     return True
-                # Parts or service spend means they buy from SEC = owns our brands
-                ytd_service = data.get("ytd_service", 0) or 0
-                ytd_parts = data.get("ytd_parts", 0) or 0
-                if ytd_service > 0 or ytd_parts > 0:
-                    return True
-                # Recent service or parts purchase history
-                last_svc = data.get("last_service", "") or ""
-                last_parts = data.get("last_parts", "") or ""
-                last_parts_date = data.get("last_parts_date", "") or ""
-                if last_svc or last_parts or last_parts_date:
-                    return True
-                # Lifecycle stage is customer (HubSpot marks them as a customer)
-                lifecycle = (data.get("lifecycle", "") or "").lower()
-                if lifecycle == "customer":
-                    return True
-                # Check deal names and descriptions for brand/model keywords
+                # Check deal names for brand/model keywords (e.g. "CX350 - SMITH CONST")
                 deal_names = (deal_info.get("deal_names", "") or "").lower()
                 desc = (data.get("description", "") or "").lower()
-                combined_text = f"{deal_names} {desc} {hs_name.lower()}"
+                combined_text = f"{deal_names} {desc}"
                 for kw in brand_keywords:
                     if kw in combined_text:
                         return True
