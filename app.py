@@ -1772,6 +1772,345 @@ def save_tracking_entry(customer_name, status, notes="", pm_value=0):
 
 
 # ═══════════════════════════════════════════════════════════
+# PM TRACKER (dedicated deal lifecycle tracking)
+# ═══════════════════════════════════════════════════════════
+PM_TRACKER_HEADERS = [
+    "Date", "Customer", "Branch", "Rep", "Make", "Model", "Serial",
+    "Eng Hours at Deal", "PM Interval (hrs)", "Contract Value",
+    "Status", "Notes", "HubSpot Deal ID", "Next PM Due (hrs)",
+    "Last Contact Date", "Hours Updated",
+]
+
+def get_pm_tracker_sheet():
+    """Get or create the PM Tracker worksheet (separate from Tracking)."""
+    sheet = get_gsheet_connection()
+    if sheet is None:
+        return None
+    try:
+        ws_list = sheet.spreadsheet.worksheets()
+        for ws in ws_list:
+            if ws.title == "PM Tracker":
+                return ws
+        pm_ws = sheet.spreadsheet.add_worksheet(title="PM Tracker", rows=5000, cols=len(PM_TRACKER_HEADERS))
+        pm_ws.append_row(PM_TRACKER_HEADERS, value_input_option="USER_ENTERED")
+        return pm_ws
+    except Exception:
+        return None
+
+def save_pm_tracker_entry(data):
+    """Save a PM deal lifecycle entry to the PM Tracker tab."""
+    ws = get_pm_tracker_sheet()
+    if ws is None:
+        return False
+    try:
+        # Determine the first PM interval for this model (smallest interval hours)
+        pm_interval = 500  # default
+        ds = PM_DEALSHEET.get(data.get("model", ""))
+        if ds:
+            intervals = [ds.get(f"hr_{k}") for k in ["1", "2", "3"] if ds.get(f"hr_{k}")]
+            if intervals:
+                pm_interval = min(intervals)
+        eng_hours = int(data.get("eng_hours", 0))
+        # Calculate next PM due: next multiple of the interval above current hours
+        if eng_hours > 0 and pm_interval > 0:
+            next_pm = ((eng_hours // pm_interval) + 1) * pm_interval
+        else:
+            next_pm = pm_interval
+        row = [
+            data.get("date", datetime.now().strftime("%m/%d/%Y")),
+            data.get("customer", ""),
+            data.get("branch", ""),
+            data.get("rep", ""),
+            data.get("make", ""),
+            data.get("model", ""),
+            data.get("serial", ""),
+            eng_hours,
+            pm_interval,
+            data.get("contract_value", 0),
+            data.get("status", "Quoted"),
+            data.get("notes", ""),
+            data.get("hs_deal_id", ""),
+            next_pm,
+            datetime.now().strftime("%m/%d/%Y"),
+            datetime.now().strftime("%m/%d/%Y"),
+        ]
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        return False
+
+def load_pm_tracker():
+    """Load all PM Tracker entries as a DataFrame."""
+    ws = get_pm_tracker_sheet()
+    if ws is None:
+        return pd.DataFrame()
+    try:
+        data = ws.get_all_records()
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════
+# HUBSPOT WRITE-BACK (PM deals only, separate from reads)
+# ═══════════════════════════════════════════════════════════
+def hubspot_create_or_update_pm_deal(deal_data):
+    """Create or update a PM deal in HubSpot. Returns deal ID or None."""
+    if not HUBSPOT_TOKEN:
+        return None
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+
+    # Search for existing deal by customer + model + serial
+    customer = deal_data.get("customer", "")
+    model = deal_data.get("model", "")
+    serial = deal_data.get("serial", "")
+    deal_name = f"{customer} - PM {model}" + (f" ({serial})" if serial else "")
+
+    try:
+        # Try to find an existing PM deal for this customer+model
+        search_payload = {
+            "filterGroups": [{
+                "filters": [
+                    {"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": customer},
+                    {"propertyName": "pm_eligible", "operator": "EQ", "value": "true"},
+                ]
+            }],
+            "properties": ["dealname", "pm_status", "pm_contract_value", "dealstage"],
+            "limit": 10,
+        }
+        resp = requests.post(
+            "https://api.hubapi.com/crm/v3/objects/deals/search",
+            headers=headers, json=search_payload, timeout=15
+        )
+        existing_deal_id = None
+        if resp.status_code == 200:
+            for d in resp.json().get("results", []):
+                dn = (d.get("properties", {}).get("dealname") or "").upper()
+                if model.upper() in dn and customer.upper() in dn:
+                    existing_deal_id = d["id"]
+                    break
+
+        # Build properties
+        status = deal_data.get("status", "Quoted")
+        stage_map = {
+            "Quoted": "presentationscheduled",
+            "Called": "qualifiedtobuy",
+            "In Progress": "contractsent",
+            "Sold": "closedwon",
+            "Not Interested": "closedlost",
+        }
+        properties = {
+            "dealname": deal_name,
+            "pm_eligible": "true",
+            "pm_status": status.lower(),
+            "amount": str(deal_data.get("contract_value", 0)),
+            "dealstage": stage_map.get(status, "presentationscheduled"),
+        }
+        # Add PM-specific custom properties if they exist in HubSpot
+        pm_props = {
+            "pm_contract_value": str(deal_data.get("contract_value", 0)),
+            "pm_machine_model": model,
+            "pm_machine_serial": serial,
+            "pm_engine_hours": str(deal_data.get("eng_hours", 0)),
+            "pm_interval_hours": str(deal_data.get("pm_interval", 500)),
+            "pm_next_service_hours": str(deal_data.get("next_pm_hours", 0)),
+        }
+        # Only include PM props that HubSpot accepts (skip if they cause errors)
+        properties.update(pm_props)
+
+        if existing_deal_id:
+            # Update existing deal
+            resp = requests.patch(
+                f"https://api.hubapi.com/crm/v3/objects/deals/{existing_deal_id}",
+                headers=headers, json={"properties": properties}, timeout=15
+            )
+            if resp.status_code == 200:
+                return existing_deal_id
+            # If custom props failed, retry with just standard props
+            std_props = {k: v for k, v in properties.items() if not k.startswith("pm_") or k in ("pm_eligible", "pm_status")}
+            resp = requests.patch(
+                f"https://api.hubapi.com/crm/v3/objects/deals/{existing_deal_id}",
+                headers=headers, json={"properties": std_props}, timeout=15
+            )
+            return existing_deal_id if resp.status_code == 200 else None
+        else:
+            # Create new deal
+            resp = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/deals",
+                headers=headers, json={"properties": properties}, timeout=15
+            )
+            if resp.status_code == 201:
+                new_id = resp.json().get("id")
+                # Try to associate with matching company
+                _associate_deal_to_company(new_id, customer, headers)
+                return new_id
+            # Retry with just standard props if custom ones failed
+            std_props = {k: v for k, v in properties.items() if not k.startswith("pm_") or k in ("pm_eligible", "pm_status")}
+            resp = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/deals",
+                headers=headers, json={"properties": std_props}, timeout=15
+            )
+            if resp.status_code == 201:
+                new_id = resp.json().get("id")
+                _associate_deal_to_company(new_id, customer, headers)
+                return new_id
+            return None
+    except Exception:
+        return None
+
+def _associate_deal_to_company(deal_id, customer_name, headers):
+    """Associate a deal with a matching HubSpot company."""
+    try:
+        # Search for the company
+        search = {
+            "filterGroups": [{"filters": [{"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": customer_name}]}],
+            "properties": ["name"],
+            "limit": 1,
+        }
+        resp = requests.post(
+            "https://api.hubapi.com/crm/v3/objects/companies/search",
+            headers=headers, json=search, timeout=10
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                company_id = results[0]["id"]
+                requests.put(
+                    f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}/associations/companies/{company_id}/deal_to_company",
+                    headers=headers, timeout=10
+                )
+    except Exception:
+        pass
+
+def hubspot_update_pm_alert(deal_id, alert_type, message):
+    """Update a HubSpot deal with an alert flag for workflow triggers."""
+    if not HUBSPOT_TOKEN or not deal_id:
+        return False
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    try:
+        properties = {
+            "pm_alert_type": alert_type,  # "hours_approaching" or "followup_overdue"
+            "pm_alert_message": message,
+            "pm_alert_date": datetime.now().strftime("%Y-%m-%d"),
+        }
+        resp = requests.patch(
+            f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+            headers=headers, json={"properties": properties}, timeout=15
+        )
+        # If custom alert props don't exist yet, that's okay, it'll fail silently
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════
+# PM ALERT ENGINE (hours threshold + follow-up tracking)
+# ═══════════════════════════════════════════════════════════
+def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
+    """
+    Compare PM Tracker entries against current fleet data to find:
+    1. Machines approaching next PM interval (10% buffer)
+    2. Customers with no contact in 30+ days
+    Returns list of alert dicts.
+    """
+    alerts = []
+    if pm_tracker_df.empty:
+        return alerts
+
+    today = datetime.now()
+
+    for _, row in pm_tracker_df.iterrows():
+        customer = str(row.get("Customer", ""))
+        model = str(row.get("Model", ""))
+        serial = str(row.get("Serial", ""))
+        status = str(row.get("Status", "")).lower()
+        next_pm = int(row.get("Next PM Due (hrs)", 0) or 0)
+        pm_interval = int(row.get("PM Interval (hrs)", 500) or 500)
+        hs_deal_id = str(row.get("HubSpot Deal ID", ""))
+        last_contact = str(row.get("Last Contact Date", ""))
+
+        # Skip closed/lost deals
+        if status in ("not interested", "closed", "lost"):
+            continue
+
+        # 1. Check hours threshold (if we have current fleet data)
+        if current_fleet_df is not None and not current_fleet_df.empty and next_pm > 0:
+            # Find this machine in fleet data by model match
+            fleet_match = None
+            if serial:
+                fleet_match = current_fleet_df[current_fleet_df["VIN"].astype(str).str.upper() == serial.upper()]
+            if fleet_match is None or fleet_match.empty:
+                fleet_match = current_fleet_df[
+                    (current_fleet_df["Customer"].astype(str).str.upper() == customer.upper()) &
+                    (current_fleet_df["Model"].astype(str).str.contains(model.split()[0] if model else "ZZZZZ", case=False, na=False))
+                ]
+            if fleet_match is not None and not fleet_match.empty:
+                current_hours = int(fleet_match.iloc[0].get("Eng Hrs", 0) or 0)
+                buffer = max(int(pm_interval * 0.10), 25)  # 10% of interval, minimum 25 hrs
+                hours_remaining = next_pm - current_hours
+
+                if 0 < hours_remaining <= buffer:
+                    alerts.append({
+                        "type": "hours_approaching",
+                        "severity": "high" if hours_remaining <= buffer // 2 else "medium",
+                        "customer": customer,
+                        "model": model,
+                        "serial": serial,
+                        "current_hours": current_hours,
+                        "next_pm": next_pm,
+                        "hours_remaining": hours_remaining,
+                        "hs_deal_id": hs_deal_id,
+                        "message": f"{model} at {current_hours:,} hrs, next PM at {next_pm:,} hrs ({hours_remaining} hrs away)",
+                    })
+                elif current_hours >= next_pm:
+                    alerts.append({
+                        "type": "hours_overdue",
+                        "severity": "critical",
+                        "customer": customer,
+                        "model": model,
+                        "serial": serial,
+                        "current_hours": current_hours,
+                        "next_pm": next_pm,
+                        "hours_remaining": hours_remaining,
+                        "hs_deal_id": hs_deal_id,
+                        "message": f"{model} at {current_hours:,} hrs, OVERDUE for PM at {next_pm:,} hrs",
+                    })
+
+        # 2. Check follow-up staleness
+        if last_contact and status not in ("sold",):
+            try:
+                from dateutil.parser import parse as parse_date
+                last_dt = parse_date(last_contact)
+                days_since = (today - last_dt).days
+                if days_since >= 30:
+                    alerts.append({
+                        "type": "followup_overdue",
+                        "severity": "medium" if days_since < 60 else "high",
+                        "customer": customer,
+                        "model": model,
+                        "serial": serial,
+                        "days_since_contact": days_since,
+                        "hs_deal_id": hs_deal_id,
+                        "message": f"No contact in {days_since} days for {model}",
+                    })
+            except Exception:
+                pass
+
+    return alerts
+
+def push_alerts_to_hubspot(alerts):
+    """Push alert flags to HubSpot deals for workflow triggers."""
+    pushed = 0
+    for alert in alerts:
+        deal_id = alert.get("hs_deal_id", "")
+        if deal_id and deal_id != "nan":
+            success = hubspot_update_pm_alert(deal_id, alert["type"], alert["message"])
+            if success:
+                pushed += 1
+    return pushed
+
+
+# ═══════════════════════════════════════════════════════════
 # PAGE ROUTING
 # ═══════════════════════════════════════════════════════════
 if st.session_state.page == "login":
@@ -1863,6 +2202,19 @@ with tab_leads:
     st.session_state.leads_df = all_leads
     st.session_state.procare_vins = procare_vins
 
+    # Load PM Tracker and check for alerts
+    pm_tracker = load_pm_tracker()
+    pm_alerts = []
+    if not pm_tracker.empty:
+        fleet_for_alerts = all_leads if not all_leads.empty else None
+        pm_alerts = check_pm_alerts(pm_tracker, fleet_for_alerts)
+        # Build lookup: customer -> list of alerts
+    pm_alerts_by_customer = {}
+    for a in pm_alerts:
+        cust = a.get("customer", "").upper()
+        if cust:
+            pm_alerts_by_customer.setdefault(cust, []).append(a)
+
     if all_leads.empty:
         st.warning("No leads found. Check that data files are loaded or HubSpot is connected.")
     else:
@@ -1870,7 +2222,7 @@ with tab_leads:
         case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
         hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
         with col2:
@@ -1882,6 +2234,15 @@ with tab_leads:
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
             else:
                 st.metric("Data Files", "Loaded")
+        with col4:
+            n_alerts = len(pm_alerts)
+            st.metric("Active Alerts", n_alerts)
+
+        # Show alert banner if there are critical/high alerts
+        critical_alerts = [a for a in pm_alerts if a.get("severity") in ("critical", "high")]
+        if critical_alerts:
+            alert_msgs = [f"**{a['customer']}**: {a['message']}" for a in critical_alerts[:5]]
+            st.error(f"Action needed on {len(critical_alerts)} machine{'s' if len(critical_alerts) > 1 else ''}:  \n" + "  \n".join(alert_msgs))
 
         st.divider()
 
@@ -1964,12 +2325,35 @@ with tab_leads:
                     subtitle = " · ".join(subtitle_parts)
                     subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}</div>' if subtitle else ""
 
+                    # Build alert badges if this customer has active alerts
+                    cust_alerts = pm_alerts_by_customer.get(cust_name.strip().upper(), [])
+                    alert_html = ""
+                    if cust_alerts:
+                        alert_pills = []
+                        for ca in cust_alerts[:3]:  # Show max 3 alerts
+                            if ca["type"] == "hours_overdue":
+                                a_color = "#DC2626"
+                                a_icon = "OVERDUE"
+                            elif ca["type"] == "hours_approaching":
+                                a_color = "#F59E0B"
+                                a_icon = "PM DUE SOON"
+                            else:
+                                a_color = "#6B7280"
+                                a_icon = "FOLLOW UP"
+                            a_msg = ca.get("message", "")
+                            alert_pills.append(
+                                f'<span style="display:inline-block;background:{a_color};color:white;font-size:10px;font-weight:700;'
+                                f'padding:3px 8px;border-radius:4px;margin-right:4px;" title="{a_msg}">{a_icon}</span>'
+                            )
+                        alert_html = f'<div style="margin-top:6px;">{"".join(alert_pills)}</div>'
+
                     # Render card with all inline styles
                     card_html = f'''<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">
                         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
                             <div>
                                 <span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>
                                 {subtitle_html}
+                                {alert_html}
                             </div>
                             <div style="text-align:right;min-width:60px;">
                                 <div style="font-size:26px;font-weight:700;color:#1A1A1A;line-height:1;">{score:.0f}</div>
@@ -2070,6 +2454,25 @@ with tab_leads:
                                         saved = save_quote_to_sheet(q)
                                         if cust_name:
                                             save_tracking_entry(cust_name, "Quoted", f"{q.get('make','')} {q.get('model','')}", q.get("annual_pm_price", 0))
+                                        # Write to PM Tracker
+                                        pm_entry = {
+                                            "customer": cust_name,
+                                            "branch": st.session_state.get("branch_name", ""),
+                                            "rep": q.get("rep", ""),
+                                            "make": q.get("make", ""),
+                                            "model": q.get("model", ""),
+                                            "serial": q.get("serial", ""),
+                                            "eng_hours": q.get("hours_requested", 0),
+                                            "contract_value": q.get("annual_pm_price", 0),
+                                            "status": "Quoted",
+                                            "notes": q.get("notes", ""),
+                                        }
+                                        save_pm_tracker_entry(pm_entry)
+                                        # Push to HubSpot
+                                        hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
+                                        if hs_deal_id:
+                                            # Update PM Tracker with HubSpot deal ID
+                                            pm_entry["hs_deal_id"] = hs_deal_id
                                         st.success("Quote saved" if saved else "Saved locally (Sheets not connected)")
                                 with rc3:
                                     if st.button("Clear Quote", use_container_width=True, key=f"qclr_{cust_key}"):
@@ -2092,6 +2495,29 @@ with tab_leads:
                                 st.success(f"Logged: {cust_name} marked as {track_status}")
                             else:
                                 st.warning("Could not save to Google Sheets. Check connection.")
+                            # Also log to PM Tracker for deal lifecycle
+                            # Get machine info from the lead data
+                            lead_model = ""
+                            lead_make = ""
+                            cust_machines_log = display[display["Customer"] == cust_name] if not display.empty else pd.DataFrame()
+                            if not cust_machines_log.empty:
+                                lead_model = str(cust_machines_log.iloc[0].get("Dealsheet Model", "") or cust_machines_log.iloc[0].get("Model", "") or "")
+                                lead_make = str(cust_machines_log.iloc[0].get("Make", "") or "")
+                            pm_log = {
+                                "customer": cust_name,
+                                "branch": st.session_state.get("branch_name", ""),
+                                "rep": st.session_state.get("rep_name", ""),
+                                "make": lead_make,
+                                "model": lead_model,
+                                "contract_value": track_pm_val,
+                                "status": track_status,
+                                "notes": track_notes,
+                            }
+                            save_pm_tracker_entry(pm_log)
+                            # Push status update to HubSpot
+                            hs_id = hubspot_create_or_update_pm_deal(pm_log)
+                            if hs_id:
+                                pm_log["hs_deal_id"] = hs_id
 
         else:  # By Machine/Lead
             st.caption(f"Showing {len(display)} leads")
