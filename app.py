@@ -260,6 +260,203 @@ def load_bundled_procare():
             return parse_procare_stops(files[-1])
     return set()
 
+# Make code mapping for equipment report
+EQUIP_MAKE_MAP = {
+    "UT": "Case", "EX": "Case", "CE": "Case",
+    "KB": "Kobelco", "BO": "Bomag", "DE": "Develon",
+}
+EQUIP_TARGET_MAKES = set(EQUIP_MAKE_MAP.keys())
+
+@st.cache_data(ttl=3600)
+def load_equipment_report():
+    """Load the 5-year equipment sold report, filtered to our 4 dealsheet brands."""
+    for pattern in ["equipment_report.xlsx", "KJ*EQUIPMENT*REPORT*.xlsx"]:
+        files = sorted(DATA_DIR.glob(pattern))
+        if files:
+            try:
+                df = pd.read_excel(files[-1], sheet_name="Sheet2", header=0)
+                # Filter to our 4 brands
+                df = df[df["EM2_MAKE"].isin(EQUIP_TARGET_MAKES)].copy()
+                # Clean up
+                df["Customer Name"] = df["Customer Name"].astype(str).str.strip()
+                df["EM2_MODEL"] = df["EM2_MODEL"].astype(str).str.strip()
+                df["Brand"] = df["EM2_MAKE"].map(EQUIP_MAKE_MAP)
+                df["EM_METER"] = pd.to_numeric(df["EM_METER"], errors="coerce").fillna(0).astype(int)
+                df["Sell Price"] = pd.to_numeric(df["Sell Price"], errors="coerce").fillna(0)
+                df["Parts and Service $"] = pd.to_numeric(df["Parts and Service $"], errors="coerce").fillna(0)
+                return df
+            except Exception:
+                return pd.DataFrame()
+    return pd.DataFrame()
+
+def build_equipment_report_leads(equip_df, existing_customers):
+    """Build lead rows from the equipment report for customers not already in other sources."""
+    if equip_df.empty:
+        return pd.DataFrame()
+
+    existing_upper = {str(c).strip().upper() for c in existing_customers}
+
+    # Group equipment by customer
+    grouped = equip_df.groupby("Customer Name")
+    rows = []
+    for cust_name, grp in grouped:
+        cust_upper = str(cust_name).strip().upper()
+        if not cust_upper or cust_upper in ("NAN", "TOTAL", ""):
+            continue
+        # Skip internal SEC machines
+        if "SOUTHEASTERN" in cust_upper or "RENTAL" in cust_upper:
+            continue
+        # Skip if already in CASE alerts or HubSpot
+        already = False
+        for ex in existing_upper:
+            if ex and cust_upper and (ex == cust_upper or ex in cust_upper or cust_upper in ex):
+                already = True
+                break
+        if already:
+            continue
+
+        # Aggregate this customer's equipment
+        machines = len(grp)
+        brands = grp["Brand"].unique().tolist()
+        models = grp["EM2_MODEL"].unique().tolist()
+        total_sell = grp["Sell Price"].sum()
+        total_ps = grp["Parts and Service $"].sum()
+        max_meter = grp["EM_METER"].max()
+        latest_sale = grp["EM_SOLD_DATE"].max()
+        top_model = grp["EM2_MODEL"].value_counts().index[0] if len(grp) > 0 else ""
+
+        # Match the top model to dealsheet for PM value estimate
+        ds_value, ds_model = get_dealsheet_pm_value(top_model, max_meter)
+        if ds_value == 0:
+            # Try other models
+            for m in models:
+                v, dm = get_dealsheet_pm_value(m, max_meter)
+                if v > 0:
+                    ds_value, ds_model = v, dm
+                    break
+
+        # Score this lead
+        score = 0.0
+
+        # Fleet size (machines bought from SEC)
+        if machines >= 10:
+            score += 30
+        elif machines >= 5:
+            score += 22
+        elif machines >= 3:
+            score += 15
+        elif machines >= 2:
+            score += 10
+        else:
+            score += 5
+
+        # Total equipment value purchased
+        if total_sell >= 500000:
+            score += 20
+        elif total_sell >= 200000:
+            score += 15
+        elif total_sell >= 100000:
+            score += 10
+        elif total_sell >= 50000:
+            score += 7
+        elif total_sell > 0:
+            score += 3
+
+        # Parts and service percentage (low % = not servicing with SEC = PM opportunity)
+        ps_pct = grp["% of Machine in parts/service"].mean() if "% of Machine in parts/service" in grp.columns else 0
+        ps_pct = float(ps_pct) if pd.notna(ps_pct) else 0
+        if ps_pct == 0:
+            score += 15  # No parts/service = prime PM target
+        elif ps_pct < 5:
+            score += 10
+        elif ps_pct < 15:
+            score += 5
+
+        # Engine hours (active machine)
+        if 500 <= max_meter <= 3000:
+            score += 15
+        elif max_meter > 3000:
+            score += 10
+        elif max_meter > 100:
+            score += 5
+
+        # Recency of purchase
+        if pd.notna(latest_sale):
+            try:
+                days_ago = (datetime.now() - pd.Timestamp(latest_sale)).days
+                if days_ago < 365:
+                    score += 10
+                elif days_ago < 730:
+                    score += 7
+                elif days_ago < 1095:
+                    score += 4
+                else:
+                    score += 2
+            except Exception:
+                score += 2
+
+        # Multiple brands = diversified fleet
+        if len(brands) >= 3:
+            score += 5
+        elif len(brands) >= 2:
+            score += 3
+
+        score = max(0, min(100, round(score, 1)))
+
+        # Tier
+        if score >= 65:
+            tier = "Top"
+        elif score >= 50:
+            tier = "High"
+        elif score >= 35:
+            tier = "Medium"
+        else:
+            tier = "Low"
+
+        # PM value estimate
+        est_pm_value = ds_value if ds_value > 0 else (machines * 2400)
+
+        lead_cat = "Equipment Buyer (No Service)" if total_ps == 0 else "Equipment Buyer"
+
+        rows.append({
+            "Customer": cust_name.strip().title(),
+            "Lead Score": score,
+            "Tier": tier,
+            "Source": "Equipment Report",
+            "Location": "",
+            "Model": top_model,
+            "Dealsheet Model": ds_model,
+            "VIN": "",
+            "Eng Hrs": max_meter,
+            "Stop": "",
+            "Parts Value": total_ps,
+            "Labor Hrs": 0,
+            "Annual PM Value": est_pm_value,
+            "In HubSpot": False,
+            "HubSpot Deals": 0,
+            "Lifecycle": "",
+            "CASE Class": "",
+            "Fleet": str(machines),
+            "Has PM": False,
+            "Lead Category": lead_cat,
+            "Service Status": "",
+            "YTD Parts": 0,
+            "YTD Service": 0,
+            "Total Spend": total_ps,
+            "has_procare": False,
+            "is_internal": False,
+            "Equip Machines": machines,
+            "Equip Brands": ", ".join(brands),
+            "Equip Models": ", ".join(models[:5]),
+            "Equip Total Sold": total_sell,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    return df.sort_values("Lead Score", ascending=False)
+
 
 # ═══════════════════════════════════════════════════════════
 # HUBSPOT ENRICHMENT
@@ -2237,21 +2434,39 @@ with tab_leads:
             mask = hs_only_leads["Customer"].apply(lambda c: _is_target_brand_customer(str(c).strip()))
             hs_only_leads = hs_only_leads[mask].copy()
 
-    # Merge both sources
-    if not scored.empty and not hs_only_leads.empty:
-        for col in hs_only_leads.columns:
-            if col not in scored.columns:
-                scored[col] = None
-        for col in scored.columns:
-            if col not in hs_only_leads.columns:
-                hs_only_leads[col] = None
-        all_leads = pd.concat([scored, hs_only_leads], ignore_index=True)
-    elif not scored.empty:
+    # Load equipment report leads (customers who bought our 4 brands but aren't in alerts/HubSpot)
+    equip_df = load_equipment_report()
+    equip_leads = pd.DataFrame()
+    if not equip_df.empty:
+        # Build set of customers already covered by CASE alerts and HubSpot
+        existing_equip = set()
+        if not scored.empty:
+            existing_equip.update(scored["Customer"].str.strip().str.upper())
+        if not hs_only_leads.empty:
+            existing_equip.update(hs_only_leads["Customer"].str.strip().str.upper())
+        equip_leads = build_equipment_report_leads(equip_df, existing_equip)
+
+    # Merge all three sources
+    sources = []
+    if not scored.empty:
         if "Source" not in scored.columns:
             scored["Source"] = "CASE Alert"
-        all_leads = scored
-    elif not hs_only_leads.empty:
-        all_leads = hs_only_leads
+        sources.append(scored)
+    if not hs_only_leads.empty:
+        sources.append(hs_only_leads)
+    if not equip_leads.empty:
+        sources.append(equip_leads)
+
+    if sources:
+        # Align columns across all sources
+        all_cols = set()
+        for s in sources:
+            all_cols.update(s.columns)
+        for s in sources:
+            for col in all_cols:
+                if col not in s.columns:
+                    s[col] = None
+        all_leads = pd.concat(sources, ignore_index=True)
     else:
         all_leads = pd.DataFrame()
 
