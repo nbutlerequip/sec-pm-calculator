@@ -2663,16 +2663,16 @@ with tab_leads:
         procare_detail = parse_procare_detailed(procare_files[-1])
         if not procare_detail.empty:
             procare_expiring = build_procare_expiring_leads(procare_detail)
-            # Map VINs to customer names from CASE alerts data
-            if not procare_expiring.empty and alerts_df is not None and not alerts_df.empty:
-                vin_to_cust = dict(zip(
-                    alerts_df["VIN"].astype(str).str.strip(),
-                    alerts_df["Customer"].astype(str).str.strip()
-                ))
-                procare_expiring["Customer"] = procare_expiring["VIN"].map(
-                    lambda v: vin_to_cust.get(str(v).strip(), "")
+            # ProCare data doesn't include customer names, only branch city + VIN + model.
+            # Use "ProCare - {Model} ({City})" as the customer label so reps can identify
+            # and look up the actual owner at their branch.
+            if not procare_expiring.empty:
+                procare_expiring["Customer"] = procare_expiring.apply(
+                    lambda r: f"ProCare Machine - {r.get('Model', 'Unknown')} ({r.get('Location', 'Unknown')})"
+                    if not r.get("Customer") else r["Customer"],
+                    axis=1
                 )
-                # Drop rows where we couldn't match a customer name
+                # Drop any with truly empty customer
                 procare_expiring = procare_expiring[procare_expiring["Customer"].str.len() > 0].copy()
 
     # Merge all sources
