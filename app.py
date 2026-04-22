@@ -2222,7 +2222,11 @@ with tab_leads:
         case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
         hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
 
-        col1, col2, col3, col4 = st.columns(4)
+        n_alerts = len(pm_alerts)
+        if n_alerts > 0:
+            col1, col2, col3, col4 = st.columns(4)
+        else:
+            col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
         with col2:
@@ -2234,9 +2238,9 @@ with tab_leads:
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
             else:
                 st.metric("Data Files", "Loaded")
-        with col4:
-            n_alerts = len(pm_alerts)
-            st.metric("Active Alerts", n_alerts)
+        if n_alerts > 0:
+            with col4:
+                st.metric("Active Alerts", n_alerts)
 
         # Show alert banner if there are critical/high alerts
         critical_alerts = [a for a in pm_alerts if a.get("severity") in ("critical", "high")]
