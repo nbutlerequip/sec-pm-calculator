@@ -289,12 +289,13 @@ def load_equipment_report():
                 return pd.DataFrame()
     return pd.DataFrame()
 
-def build_equipment_report_leads(equip_df, existing_customers):
+def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
     """Build lead rows from the equipment report for customers not already in other sources."""
     if equip_df.empty:
         return pd.DataFrame()
 
     existing_upper = {str(c).strip().upper() for c in existing_customers}
+    branch_map = branch_map or {}
 
     # Exclude auction houses, dealers, and resellers (not end customers)
     exclude_keywords = ["iron planet", "alex lyon", "big iron", "ritchie", "auction",
@@ -332,6 +333,17 @@ def build_equipment_report_leads(equip_df, existing_customers):
         max_meter = grp["EM_METER"].max()
         latest_sale = grp["EM_SOLD_DATE"].max()
         top_model = grp["EM2_MODEL"].value_counts().index[0] if len(grp) > 0 else ""
+
+        # Look up branch from Customer Reference
+        cust_branch = ""
+        if branch_map and "EM_CUSTOMER" in grp.columns:
+            for cid in grp["EM_CUSTOMER"].dropna().unique():
+                try:
+                    cust_branch = branch_map.get(int(cid), "")
+                except (ValueError, TypeError):
+                    pass
+                if cust_branch:
+                    break
 
         # Match the top model to dealsheet for PM value estimate
         ds_value, ds_model = get_dealsheet_pm_value(top_model, max_meter)
@@ -441,7 +453,7 @@ def build_equipment_report_leads(equip_df, existing_customers):
             "Lead Score": score,
             "Tier": tier,
             "Source": "Equipment Report",
-            "Location": "",
+            "Location": cust_branch,
             "Model": top_model,
             "Dealsheet Model": ds_model,
             "VIN": "",
@@ -1029,8 +1041,14 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             score += 6
 
         # Parts-only bonus (buying parts but no service = doing their own maintenance)
+        # This is the strongest conversion signal: they already buy from SEC
+        # but do their own maintenance. PM contract replaces that effort.
         if ytd_parts > 0 and ytd_service == 0:
-            score += 10  # Prime PM conversion target
+            score += 20  # Prime PM conversion target
+        elif ps_engagement == "Customer purchases parts from SEC, but mostly manages their own service":
+            score += 20  # Engagement field confirms parts-only
+        elif last_parts and last_parts != "No Purchase" and (last_service == "No Purchase" or not last_service):
+            score += 15  # Historical parts buyer, no service history
 
         # Fleet size score
         fleet_points = {
@@ -1211,23 +1229,123 @@ def get_dealsheet_pm_value(alert_model, eng_hours):
         return float(result["total_cost"]), ds_key
     return 0.0, None
 
+def parse_procare_detailed(file):
+    """Parse ProCare data with hours info for expiration detection."""
+    df = pd.read_excel(file)
+    machines = df[
+        (df["VinHrs"].notna()) & (df["VinHrs"] != "Total") &
+        (df["Model"].notna()) & (df["Model"] != "Total")
+    ].copy()
+    machines["VIN"] = machines["VinHrs"].apply(lambda x: str(x).split(" - ")[0].strip())
+    machines["PC_Hours"] = machines["VinHrs"].apply(
+        lambda x: int(str(x).split(" - ")[1].strip()) if " - " in str(x) else 0
+    )
+    machines["PC_Model"] = machines["Model"].astype(str).str.strip()
+    machines["PC_City"] = machines["City"].astype(str).str.strip()
+    machines["PC_Completion"] = pd.to_numeric(machines["Completion %"], errors="coerce").fillna(0)
+    return machines[["VIN", "PC_Hours", "PC_Model", "PC_City", "PC_Completion"]]
+
+def build_procare_expiring_leads(procare_detail_df):
+    """Build leads from ProCare machines nearing contract expiration.
+    High hours = approaching end of ProCare coverage = PM conversion opportunity."""
+    if procare_detail_df.empty:
+        return pd.DataFrame()
+
+    # ProCare typically covers to ~3000-5000 hrs depending on machine/contract
+    # Machines at 2500+ hours are approaching expiration
+    expiring = procare_detail_df[procare_detail_df["PC_Hours"] >= 2500].copy()
+    if expiring.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, row in expiring.iterrows():
+        hrs = row["PC_Hours"]
+        model = row["PC_Model"]
+        ds_value, ds_model = get_dealsheet_pm_value(model, hrs)
+
+        score = 0
+        # These are the hottest leads: they already value PM service
+        score += 25  # Base: ProCare customer = already sold on PM concept
+        if hrs >= 4000:
+            score += 25  # Very likely expiring soon
+        elif hrs >= 3000:
+            score += 20
+        else:
+            score += 15  # 2500-3000, approaching
+
+        # PM contract value
+        if ds_value >= 8000:
+            score += 15
+        elif ds_value >= 5000:
+            score += 10
+        elif ds_value > 0:
+            score += 5
+
+        # Low completion % = not fully using ProCare, might not renew
+        if row["PC_Completion"] < 0.5:
+            score += 5
+
+        score = min(100, max(0, round(score, 1)))
+
+        if score >= 65:
+            tier = "Top"
+        elif score >= 50:
+            tier = "High"
+        elif score >= 35:
+            tier = "Medium"
+        else:
+            tier = "Low"
+
+        rows.append({
+            "Customer": "",  # Will need to match from alerts data
+            "Lead Score": score,
+            "Tier": tier,
+            "Source": "ProCare Expiring",
+            "Location": row.get("PC_City", ""),
+            "Model": model,
+            "Dealsheet Model": ds_model,
+            "VIN": row["VIN"],
+            "Eng Hrs": hrs,
+            "Stop": "",
+            "Parts Value": 0,
+            "Labor Hrs": 0,
+            "Annual PM Value": ds_value if ds_value > 0 else 4800,
+            "In HubSpot": False,
+            "HubSpot Deals": 0,
+            "Lifecycle": "",
+            "CASE Class": "",
+            "Fleet": "",
+            "Has PM": True,
+            "Lead Category": "ProCare Expiring",
+            "Service Status": "",
+            "YTD Parts": 0,
+            "YTD Service": 0,
+            "Total Spend": 0,
+            "has_procare": True,
+            "is_internal": False,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("Lead Score", ascending=False)
+
+
 def score_leads(alerts_df, procare_vins):
     """
-    Score each machine/customer combination.
-    Higher score = better PM lead opportunity.
+    Score each machine/customer combination using absolute point values.
+    Same 0-100 scale as HubSpot and Equipment Report sources.
 
-    Scoring factors:
-    - No ProCare coverage (required, or excluded)
-    - Parts value (higher = more PM revenue opportunity)
-    - Labor hours (higher = more complex service = more value)
-    - Engine hours (sweet spot: 500-3000 hrs = active machine needing PM)
-    - Service stop type (higher hour stops = overdue maintenance)
-    - Multiple machines per customer (fleet deals)
-    - Not an internal SEC machine
+    Scoring factors (absolute points, max ~100):
+    - Engine hours sweet spot: up to 20 pts
+    - Service stop type (overdue level): up to 20 pts
+    - Annual PM contract value: up to 20 pts
+    - Parts spend level: up to 15 pts
+    - Fleet size: up to 15 pts
+    - Labor hours: up to 10 pts
     """
     df = alerts_df.copy()
 
-    # Exclude machines with ProCare
+    # Exclude machines with active ProCare (they get scored separately as expiring leads)
     df["has_procare"] = df["VIN"].isin(procare_vins)
     df = df[~df["has_procare"]].copy()
 
@@ -1251,68 +1369,99 @@ def score_leads(alerts_df, procare_vins):
     if df.empty:
         return df
 
-    # ── Score components (0-100 scale each) ──
+    # ── Absolute point scoring (same scale as other sources) ──
 
-    # Parts value score: higher parts = more opportunity
-    max_parts = df["Parts Value"].quantile(0.95) if len(df) > 10 else df["Parts Value"].max()
-    max_parts = max(max_parts, 1)
-    df["parts_score"] = (df["Parts Value"] / max_parts * 100).clip(0, 100)
-
-    # Labor hours score
-    max_labor = df["Labor Hrs"].quantile(0.95) if len(df) > 10 else df["Labor Hrs"].max()
-    max_labor = max(max_labor, 1)
-    df["labor_score"] = (df["Labor Hrs"] / max_labor * 100).clip(0, 100)
-
-    # Engine hours score: sweet spot 500-3000, penalize very low (not using it)
-    def hours_score(h):
+    # Engine hours: sweet spot 500-3000 = active machine needing PM (up to 20 pts)
+    def hours_pts(h):
         if h < 100:
-            return 15
+            return 3
         elif h < 500:
-            return 40
+            return 8
         elif h < 1500:
-            return 85
+            return 17
         elif h < 3000:
-            return 100
+            return 20
         elif h < 5000:
-            return 75
+            return 15
         else:
-            return 50  # very high hours, machine may be near end of life
-    df["hours_score"] = df["Eng Hrs"].apply(hours_score)
+            return 10
+    df["hours_pts"] = df["Eng Hrs"].apply(hours_pts)
 
-    # Stop type score: higher service stops = more overdue = hotter lead
-    stop_scores = {
-        "50 Hr Stop": 20, "100 Hr Stop": 30, "150 Hr Stop": 35,
-        "250 Hr Stop": 45, "500 Hr Stop": 60, "1000 Hr Stop": 80,
-        "1500 Hr Stop": 85, "2000 Hr Stop": 90, "2500 Hr Stop": 92,
-        "3000 Hr Stop": 95, "3500 Hr Stop": 97, "4000 Hr Stop": 98,
-        "4500 Hr Stop": 99, "5000 Hr Stop": 100, "Other": 50,
+    # Stop type: higher stops = more overdue = hotter lead (up to 20 pts)
+    stop_pts = {
+        "50 Hr Stop": 4, "100 Hr Stop": 6, "150 Hr Stop": 7,
+        "250 Hr Stop": 9, "500 Hr Stop": 12, "1000 Hr Stop": 16,
+        "1500 Hr Stop": 17, "2000 Hr Stop": 18, "2500 Hr Stop": 19,
+        "3000 Hr Stop": 20, "3500 Hr Stop": 20, "4000 Hr Stop": 20,
+        "4500 Hr Stop": 20, "5000 Hr Stop": 20, "Other": 10,
     }
-    df["stop_score"] = df["Stop"].map(stop_scores).fillna(50)
+    df["stop_pts"] = df["Stop"].map(stop_pts).fillna(10)
 
-    # Fleet multiplier: even 1 machine is worth calling, scale from there
+    # Annual PM value: absolute tiers based on dealsheet price (up to 20 pts)
+    def value_pts(v):
+        if v >= 12000:
+            return 20
+        elif v >= 8000:
+            return 16
+        elif v >= 5000:
+            return 12
+        elif v >= 3000:
+            return 8
+        elif v > 0:
+            return 4
+        return 0
+    df["value_pts"] = df["Annual PM Value"].apply(value_pts)
+
+    # Parts spend: absolute dollar tiers (up to 15 pts)
+    def parts_pts(p):
+        if p >= 5000:
+            return 15
+        elif p >= 2000:
+            return 12
+        elif p >= 1000:
+            return 9
+        elif p >= 500:
+            return 6
+        elif p > 0:
+            return 3
+        return 0
+    df["parts_pts"] = df["Parts Value"].apply(parts_pts)
+
+    # Fleet size: more machines = bigger deal (up to 15 pts)
     fleet_counts = df.groupby("Customer")["VIN"].transform("nunique")
     df["fleet_count"] = fleet_counts
-    # 1 machine = 40, 3 = 60, 7+ = 80, 15+ = 100
-    df["fleet_score"] = fleet_counts.apply(
-        lambda n: min(100, 40 + (n - 1) * 10)
-    ).clip(0, 100)
+    def fleet_pts(n):
+        if n >= 10:
+            return 15
+        elif n >= 5:
+            return 12
+        elif n >= 3:
+            return 9
+        elif n >= 2:
+            return 6
+        return 3
+    df["fleet_pts"] = fleet_counts.apply(fleet_pts)
 
-    # Annual PM value score: real dealsheet value relative to the max in this set
-    max_annual = df["Annual PM Value"].quantile(0.95) if len(df) > 10 else df["Annual PM Value"].max()
-    max_annual = max(max_annual, 1)
-    df["value_score"] = (df["Annual PM Value"] / max_annual * 100).clip(0, 100)
+    # Labor hours: absolute tiers (up to 10 pts)
+    def labor_pts(l):
+        if l >= 20:
+            return 10
+        elif l >= 10:
+            return 8
+        elif l >= 5:
+            return 5
+        elif l > 0:
+            return 3
+        return 0
+    df["labor_pts"] = df["Labor Hrs"].apply(labor_pts)
 
-    # ── Weighted composite score ──
+    # ── Sum all points ──
     df["Lead Score"] = (
-        df["parts_score"]  * 0.15 +
-        df["labor_score"]  * 0.10 +
-        df["hours_score"]  * 0.20 +
-        df["stop_score"]   * 0.20 +
-        df["fleet_score"]  * 0.10 +
-        df["value_score"]  * 0.25
-    ).round(1)
+        df["hours_pts"] + df["stop_pts"] + df["value_pts"] +
+        df["parts_pts"] + df["fleet_pts"] + df["labor_pts"]
+    ).clip(0, 100).round(1)
 
-    # Tier assignment
+    # Tier assignment (same thresholds across all sources)
     df["Tier"] = pd.cut(
         df["Lead Score"],
         bins=[0, 35, 50, 65, 100],
@@ -1990,6 +2139,47 @@ def save_tracking_entry(customer_name, status, notes="", pm_value=0):
         return False
 
 
+@st.cache_data(ttl=3600)
+def load_not_interested_customers():
+    """Load customers marked 'Not Interested' from the Tracking sheet.
+    Returns a set of uppercased customer names."""
+    ws = get_tracking_sheet()
+    if ws is None:
+        return set()
+    try:
+        rows = ws.get_all_records()
+        return {
+            str(r.get("Customer", "")).strip().upper()
+            for r in rows
+            if str(r.get("Status", "")).strip().lower() == "not interested"
+        }
+    except Exception:
+        return set()
+
+
+@st.cache_data(ttl=3600)
+def load_equip_branch_map():
+    """Load customer-to-branch mapping from equipment report Customer Reference sheet.
+    Returns dict of EM_CUSTOMER (int) -> branch name (str)."""
+    for pattern in ["equipment_report.xlsx", "KJ*EQUIPMENT*REPORT*.xlsx"]:
+        files = sorted(DATA_DIR.glob(pattern))
+        if files:
+            try:
+                cr = pd.read_excel(files[-1], sheet_name="Customer Reference", header=0)
+                cr["NA_ASSIGNED_BRANCH"] = pd.to_numeric(cr["NA_ASSIGNED_BRANCH"], errors="coerce").fillna(0).astype(int)
+                mapping = {}
+                for _, row in cr.iterrows():
+                    cust_id = row["NA_CUSTOMER"]
+                    branch_num = row["NA_ASSIGNED_BRANCH"]
+                    branch_name = BRANCHES.get(branch_num, "")
+                    if branch_name:
+                        mapping[cust_id] = branch_name
+                return mapping
+            except Exception:
+                return {}
+    return {}
+
+
 # ═══════════════════════════════════════════════════════════
 # PM TRACKER (dedicated deal lifecycle tracking)
 # ═══════════════════════════════════════════════════════════
@@ -2372,7 +2562,7 @@ tab_leads, tab_history = st.tabs(["Lead Discovery", "Quote History"])
 # ═══════════════════════════════════════════════════════════
 with tab_leads:
     st.subheader("PM Lead Discovery")
-    st.caption("Scores customers with Case, Kobelco, Develon, and Bomag machines from CASE alerts and HubSpot CRM. Only customers tied to our 4 dealsheet brands are shown.")
+    st.caption("Scores customers with Case, Kobelco, Develon, and Bomag machines from CASE alerts, HubSpot CRM, equipment sales history, and ProCare expiring contracts. Customers marked 'Not Interested' are penalized.")
 
     # Auto-load bundled data
     alerts_df = load_bundled_alerts()
@@ -2455,16 +2645,37 @@ with tab_leads:
     # Load equipment report leads (customers who bought our 4 brands but aren't in alerts/HubSpot)
     equip_df = load_equipment_report()
     equip_leads = pd.DataFrame()
+    equip_branch_map = {}
     if not equip_df.empty:
+        equip_branch_map = load_equip_branch_map()
         # Build set of customers already covered by CASE alerts and HubSpot
         existing_equip = set()
         if not scored.empty:
             existing_equip.update(scored["Customer"].str.strip().str.upper())
         if not hs_only_leads.empty:
             existing_equip.update(hs_only_leads["Customer"].str.strip().str.upper())
-        equip_leads = build_equipment_report_leads(equip_df, existing_equip)
+        equip_leads = build_equipment_report_leads(equip_df, existing_equip, equip_branch_map)
 
-    # Merge all three sources
+    # Build ProCare expiring leads (machines at 2500+ hrs approaching contract end)
+    procare_expiring = pd.DataFrame()
+    procare_files = sorted(DATA_DIR.glob("procare.xlsx")) or sorted(DATA_DIR.glob("Southeastern ProCare Stops*.xlsx"))
+    if procare_files:
+        procare_detail = parse_procare_detailed(procare_files[-1])
+        if not procare_detail.empty:
+            procare_expiring = build_procare_expiring_leads(procare_detail)
+            # Map VINs to customer names from CASE alerts data
+            if not procare_expiring.empty and alerts_df is not None and not alerts_df.empty:
+                vin_to_cust = dict(zip(
+                    alerts_df["VIN"].astype(str).str.strip(),
+                    alerts_df["Customer"].astype(str).str.strip()
+                ))
+                procare_expiring["Customer"] = procare_expiring["VIN"].map(
+                    lambda v: vin_to_cust.get(str(v).strip(), "")
+                )
+                # Drop rows where we couldn't match a customer name
+                procare_expiring = procare_expiring[procare_expiring["Customer"].str.len() > 0].copy()
+
+    # Merge all sources
     sources = []
     if not scored.empty:
         if "Source" not in scored.columns:
@@ -2474,6 +2685,8 @@ with tab_leads:
         sources.append(hs_only_leads)
     if not equip_leads.empty:
         sources.append(equip_leads)
+    if not procare_expiring.empty:
+        sources.append(procare_expiring)
 
     if sources:
         # Align columns across all sources
@@ -2487,6 +2700,29 @@ with tab_leads:
         all_leads = pd.concat(sources, ignore_index=True)
     else:
         all_leads = pd.DataFrame()
+
+    # Apply "Not Interested" penalty from tracking data
+    if not all_leads.empty:
+        not_interested = load_not_interested_customers()
+        if not_interested:
+            ni_mask = all_leads["Customer"].str.strip().str.upper().isin(not_interested)
+            all_leads.loc[ni_mask, "Lead Score"] = (
+                all_leads.loc[ni_mask, "Lead Score"] - 25
+            ).clip(lower=0)
+            # Recalculate tiers after penalty
+            for idx in all_leads[ni_mask].index:
+                s = all_leads.at[idx, "Lead Score"]
+                if s >= 65:
+                    all_leads.at[idx, "Tier"] = "Top"
+                elif s >= 50:
+                    all_leads.at[idx, "Tier"] = "High"
+                elif s >= 35:
+                    all_leads.at[idx, "Tier"] = "Medium"
+                else:
+                    all_leads.at[idx, "Tier"] = "Low"
+            all_leads.loc[ni_mask, "Lead Category"] = (
+                all_leads.loc[ni_mask, "Lead Category"].astype(str) + " (Not Interested)"
+            )
 
     st.session_state.leads_df = all_leads
     st.session_state.procare_vins = procare_vins
