@@ -296,6 +296,10 @@ def build_equipment_report_leads(equip_df, existing_customers):
 
     existing_upper = {str(c).strip().upper() for c in existing_customers}
 
+    # Exclude auction houses, dealers, and resellers (not end customers)
+    exclude_keywords = ["iron planet", "alex lyon", "big iron", "ritchie", "auction",
+                        "case power & equipment", "tracey road equipment"]
+
     # Group equipment by customer
     grouped = equip_df.groupby("Customer Name")
     rows = []
@@ -305,6 +309,10 @@ def build_equipment_report_leads(equip_df, existing_customers):
             continue
         # Skip internal SEC machines
         if "SOUTHEASTERN" in cust_upper or "RENTAL" in cust_upper:
+            continue
+        # Skip auction houses and equipment dealers
+        cust_lower = cust_upper.lower()
+        if any(kw in cust_lower for kw in exclude_keywords):
             continue
         # Skip if already in CASE alerts or HubSpot
         already = False
@@ -380,20 +388,26 @@ def build_equipment_report_leads(equip_df, existing_customers):
         elif max_meter > 100:
             score += 5
 
-        # Recency of purchase
+        # Recency of purchase (heavier weight, older = likely sold the machine)
+        days_ago = 9999
         if pd.notna(latest_sale):
             try:
                 days_ago = (datetime.now() - pd.Timestamp(latest_sale)).days
-                if days_ago < 365:
-                    score += 10
-                elif days_ago < 730:
-                    score += 7
-                elif days_ago < 1095:
-                    score += 4
-                else:
-                    score += 2
             except Exception:
-                score += 2
+                days_ago = 9999
+        if days_ago < 365:
+            score += 15
+        elif days_ago < 730:
+            score += 10
+        elif days_ago < 1095:
+            score += 5
+        else:
+            score -= 5  # Penalize old purchases, they may not own it anymore
+
+        # Skip customers whose most recent purchase is 4+ years ago and only bought 1 machine
+        # They almost certainly don't own it anymore
+        if days_ago > 1460 and machines == 1:
+            continue
 
         # Multiple brands = diversified fleet
         if len(brands) >= 3:
@@ -412,6 +426,10 @@ def build_equipment_report_leads(equip_df, existing_customers):
             tier = "Medium"
         else:
             tier = "Low"
+
+        # Drop Low tier leads from equipment report since they lack enough signal
+        if tier == "Low":
+            continue
 
         # PM value estimate
         est_pm_value = ds_value if ds_value > 0 else (machines * 2400)
