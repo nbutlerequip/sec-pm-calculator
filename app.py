@@ -1511,28 +1511,7 @@ st.markdown("""
     .lead-top { border-left: 4px solid #C8102E; padding-left: 12px; margin-bottom: 8px; }
     .lead-high { border-left: 4px solid #F59E0B; padding-left: 12px; margin-bottom: 8px; }
     .lead-med { border-left: 4px solid #3B82F6; padding-left: 12px; margin-bottom: 8px; }
-    .lead-card { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; padding: 20px 24px 16px 24px; margin-bottom: 14px; }
-    .lead-card-top { border-left: 4px solid #C8102E; }
-    .lead-card-high { border-left: 4px solid #F59E0B; }
-    .lead-card-med { border-left: 4px solid #3B82F6; }
-    .lead-card-low { border-left: 4px solid #9CA3AF; }
-    .lead-card .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-    .lead-card .card-name { font-size: 17px; font-weight: 700; color: #1A1A1A; }
-    .lead-card .card-tag { display: inline-block; background: #F3F4F6; color: #4A4A4A; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-left: 10px; font-weight: 500; }
-    .lead-card .card-score { text-align: right; }
-    .lead-card .card-score .score-val { font-size: 28px; font-weight: 700; color: #1A1A1A; line-height: 1; }
-    .lead-card .card-score .score-tier { font-size: 12px; font-weight: 600; margin-top: 2px; }
-    .lead-card .card-score .tier-top { color: #C8102E; }
-    .lead-card .card-score .tier-high { color: #F59E0B; }
-    .lead-card .card-score .tier-med { color: #3B82F6; }
-    .lead-card .card-location { font-size: 12px; color: #9CA3AF; margin-top: 2px; }
-    .lead-card .card-detail { font-size: 13px; color: #4A4A4A; margin: 4px 0; }
-    .lead-card .card-detail strong { color: #1A1A1A; }
-    .lead-card .card-machines { font-size: 13px; color: #6B7280; margin: 6px 0; }
-    .lead-card .card-spend { display: flex; gap: 20px; margin: 8px 0; flex-wrap: wrap; }
-    .lead-card .card-spend .spend-item { font-size: 12px; color: #6B7280; }
-    .lead-card .card-spend .spend-item .spend-val { font-size: 14px; font-weight: 600; color: #1A1A1A; }
-    .lead-card .card-angle { font-size: 13px; color: #374151; margin-top: 8px; padding: 8px 12px; background: #F9FAFB; border-radius: 6px; font-style: italic; }
+    /* lead cards are fully inline-styled for Streamlit compatibility */
     .login-container { text-align: center; padding: 60px 20px; }
     .login-title { color: #C8102E; font-size: 36px; font-weight: 600; margin-bottom: 8px; }
     .login-subtitle { color: #666; font-size: 18px; margin-bottom: 8px; }
@@ -1958,53 +1937,58 @@ with tab_leads:
                     elif "fleet" in row and row.get("fleet"):
                         machines_str = f"Fleet: {row['fleet']}"
 
-                    # Build spend items
-                    ytd_parts = float(row.get("ytd_parts", 0) or 0)
-                    ytd_service = float(row.get("ytd_service", 0) or 0)
-                    total_spend = float(row.get("total_spend", 0) or 0)
+                    # Values for card
                     parts_opp = float(row.get("total_parts_value", 0) or 0)
                     pm_value = float(row.get("total_annual_pm", 0) or 0)
-
-                    spend_html = ""
-                    if total_spend > 0:
-                        spend_html += f'<div class="spend-item">YTD Spend<br><span class="spend-val">${total_spend:,.0f}</span></div>'
-                        if ytd_parts > 0:
-                            spend_html += f'<div class="spend-item">Parts<br><span class="spend-val">${ytd_parts:,.0f}</span></div>'
-                        if ytd_service > 0:
-                            spend_html += f'<div class="spend-item">Service<br><span class="spend-val">${ytd_service:,.0f}</span></div>'
-                    elif parts_opp > 0:
-                        spend_html += f'<div class="spend-item">Parts Opp.<br><span class="spend-val">${parts_opp:,.0f}</span></div>'
-                    if pm_value > 0:
-                        spend_html += f'<div class="spend-item">Est. Annual PM<br><span class="spend-val">${pm_value:,.0f}</span></div>'
-
-                    # Build angle
-                    reasons, angle = build_lead_explanation(row)
-                    angle_html = f'<div class="card-angle">{angle}</div>' if angle else ""
-
-                    # Category tag
-                    cat_tag = ""
-                    if "lead_category" in row and row.get("lead_category"):
-                        cat_tag = f'<span class="card-tag">{row["lead_category"]}</span>'
-
-                    # Location
+                    score = row["Customer Score"]
                     loc = row.get("location", "") or ""
-                    loc_html = f'<div class="card-location">{loc}</div>' if loc else ""
+                    cat_label = row.get("lead_category", "") or ""
 
-                    # Render card
-                    card_html = f'''<div class="lead-card lead-card-{tier_class}">
-                        <div class="card-header">
+                    # Tier accent color
+                    accent = {"Top": "#C8102E", "High": "#F59E0B", "Medium": "#3B82F6"}.get(tier, "#9CA3AF")
+
+                    # Machines pill HTML
+                    machines_html = ""
+                    if machines_str:
+                        machine_list = [m.strip() for m in machines_str.replace("Fleet: ", "").split(",") if m.strip()]
+                        pills = "".join(
+                            f'<span style="display:inline-block;background:#F3F4F6;color:#374151;font-size:12px;padding:3px 10px;border-radius:12px;margin:2px 4px 2px 0;font-weight:500;">{m}</span>'
+                            for m in machine_list[:8]
+                        )
+                        if len(machine_list) > 8:
+                            pills += f'<span style="display:inline-block;color:#9CA3AF;font-size:12px;padding:3px 4px;">+{len(machine_list)-8} more</span>'
+                        machines_html = f'<div style="margin:10px 0 0 0;">{pills}</div>'
+
+                    # Value pills
+                    value_pills = ""
+                    if pm_value > 0:
+                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Est PM Value</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
+                    if parts_opp > 0:
+                        value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
+
+                    # Location + category subtitle
+                    subtitle_parts = []
+                    if loc:
+                        subtitle_parts.append(loc)
+                    if cat_label:
+                        subtitle_parts.append(cat_label)
+                    subtitle = " · ".join(subtitle_parts)
+                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}</div>' if subtitle else ""
+
+                    # Render card with all inline styles
+                    card_html = f'''<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
                             <div>
-                                <span class="card-name">{cust_name}</span>{cat_tag}
-                                {loc_html}
+                                <span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>
+                                {subtitle_html}
                             </div>
-                            <div class="card-score">
-                                <div class="score-val">{row["Customer Score"]:.0f}</div>
-                                <div class="score-tier {tier_css}">{tier}</div>
+                            <div style="text-align:right;min-width:60px;">
+                                <div style="font-size:26px;font-weight:700;color:#1A1A1A;line-height:1;">{score:.0f}</div>
+                                <div style="font-size:11px;font-weight:600;color:{accent};margin-top:2px;">{tier}</div>
                             </div>
                         </div>
-                        {"<div class='card-machines'>" + machines_str + "</div>" if machines_str else ""}
-                        {"<div class='card-spend'>" + spend_html + "</div>" if spend_html else ""}
-                        {angle_html}
+                        {machines_html}
+                        <div style="margin-top:12px;">{value_pills}</div>
                     </div>'''
                     st.markdown(card_html, unsafe_allow_html=True)
 
