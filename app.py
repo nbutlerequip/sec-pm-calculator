@@ -2504,7 +2504,12 @@ with tab_leads:
             top_high = all_leads[all_leads["Tier"].isin(["Top", "High"])]["Customer"].nunique()
             st.metric("Top + High", top_high)
         with col3:
-            if "Total Spend" in all_leads.columns:
+            # Only count YTD spend from HubSpot (accurate YTD), not equipment report lifetime spend
+            if "YTD Parts" in all_leads.columns and "YTD Service" in all_leads.columns:
+                ytd_by_cust = all_leads.groupby("Customer").agg({"YTD Parts": "first", "YTD Service": "first"})
+                ytd_total = ytd_by_cust["YTD Parts"].fillna(0).sum() + ytd_by_cust["YTD Service"].fillna(0).sum()
+                st.metric("Known Spend (YTD)", f"${ytd_total:,.0f}")
+            elif "Total Spend" in all_leads.columns:
                 total_spend = all_leads.groupby("Customer")["Total Spend"].first().sum()
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
             else:
