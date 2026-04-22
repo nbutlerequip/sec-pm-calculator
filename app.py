@@ -2153,7 +2153,7 @@ tab_leads, tab_history = st.tabs(["Lead Discovery", "Quote History"])
 # ═══════════════════════════════════════════════════════════
 with tab_leads:
     st.subheader("PM Lead Discovery")
-    st.caption("Scores customers from CASE maintenance alerts AND HubSpot CRM to find the best PM opportunities. Customers with spend history, fleet data, and equipment purchases are prioritized.")
+    st.caption("Scores customers with Case, Kobelco, Develon, and Bomag machines from CASE alerts and HubSpot CRM. Only customers tied to our 4 dealsheet brands are shown.")
 
     # Auto-load bundled data
     alerts_df = load_bundled_alerts()
@@ -2164,7 +2164,7 @@ with tab_leads:
     if alerts_df is not None and not alerts_df.empty:
         scored = score_leads(alerts_df, procare_vins)
 
-    # HubSpot enrichment + HubSpot-only leads
+    # HubSpot enrichment + filtered HubSpot-only leads (4 dealsheet brands only)
     hs_companies = fetch_hubspot_companies()
     deal_history, pm_active = {}, set()
     hs_only_leads = pd.DataFrame()
@@ -2172,17 +2172,46 @@ with tab_leads:
     if hs_companies:
         deal_history, pm_active = fetch_hubspot_deals()
 
-        # Enrich CASE leads with HubSpot data
+        # Enrich CASE leads with HubSpot data (adds spend, deal history, warranty info)
         if not scored.empty:
             scored = enrich_leads_with_hubspot(scored, hs_companies, deal_history, pm_active)
 
-        # Build HubSpot-only leads (customers NOT in CASE alerts)
+        # Build HubSpot-only leads, filtered to 4 dealsheet brands
         existing_customers = set(scored["Customer"].str.strip().str.upper()) if not scored.empty else set()
         hs_only_leads = build_hubspot_only_leads(hs_companies, deal_history, pm_active, existing_customers)
 
+        # Filter HubSpot-only leads to customers tied to our 4 brands
+        if not hs_only_leads.empty:
+            target_brands = {"case", "kobelco", "develon", "bomag"}
+            brand_keywords = [
+                "case", "kobelco", "develon", "bomag",
+                "cx", "dx", "sv", "sk", "bw", "bf",  # model prefixes
+                "321", "521", "580", "590", "650", "750", "850",  # common CASE models
+            ]
+            def _is_target_brand_customer(hs_name):
+                """Check if this HubSpot customer is associated with our 4 dealsheet brands."""
+                data = hs_companies.get(hs_name.upper(), {})
+                # Check CASE classification (if set, they bought CASE/Kobelco/etc from SEC)
+                case_class = (data.get("case_class", "") or "").lower()
+                if case_class and case_class not in ("", "competitor", "competitive"):
+                    return True
+                # Check prospect classification
+                prospect_class = (data.get("prospect_class", "") or "").lower()
+                if prospect_class and "case" in prospect_class or "kobelco" in prospect_class:
+                    return True
+                # Check deal names for brand/model keywords
+                deal_info = deal_history.get(hs_name.upper(), {})
+                if deal_info.get("won", 0) > 0:
+                    # If they have won deals, they bought equipment from SEC
+                    # SEC only sells the 4 brands, so any won deal = target brand customer
+                    return True
+                return False
+
+            mask = hs_only_leads["Customer"].apply(lambda c: _is_target_brand_customer(str(c).strip()))
+            hs_only_leads = hs_only_leads[mask].copy()
+
     # Merge both sources
     if not scored.empty and not hs_only_leads.empty:
-        # Make sure columns align before concat
         for col in hs_only_leads.columns:
             if col not in scored.columns:
                 scored[col] = None
