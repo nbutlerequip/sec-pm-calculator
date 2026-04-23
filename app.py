@@ -1037,6 +1037,9 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             continue
 
         # ── Score this lead (0-100) ──
+        ps_engagement = data.get("ps_engagement", "")
+        last_service = data.get("last_service", "")
+        last_parts = data.get("last_parts", "")
         score = 0.0
 
         # Spend score (biggest weight): parts + service YTD
