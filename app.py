@@ -2657,19 +2657,27 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
         if status in ("not interested", "closed", "lost"):
             continue
 
-        # 1. Check hours threshold (if we have current fleet data)
-        if current_fleet_df is not None and not current_fleet_df.empty and next_pm > 0:
-            # Find this machine in fleet data by model match
-            fleet_match = None
-            if serial:
-                fleet_match = current_fleet_df[current_fleet_df["VIN"].astype(str).str.upper() == serial.upper()]
-            if fleet_match is None or fleet_match.empty:
-                fleet_match = current_fleet_df[
-                    (current_fleet_df["Customer"].astype(str).str.upper() == customer.upper()) &
-                    (current_fleet_df["Model"].astype(str).str.contains(model.split()[0] if model else "ZZZZZ", case=False, na=False))
-                ]
-            if fleet_match is not None and not fleet_match.empty:
-                current_hours = int(fleet_match.iloc[0].get("Eng Hrs", 0) or 0)
+        # 1. Check hours threshold
+        if next_pm > 0:
+            # Use hours from PM Tracker row first (most up to date)
+            current_hours = int(row.get("Eng Hours at Deal", 0) or 0)
+
+            # Try to get fresher hours from fleet data if available
+            if current_fleet_df is not None and not current_fleet_df.empty:
+                fleet_match = None
+                if serial:
+                    fleet_match = current_fleet_df[current_fleet_df["VIN"].astype(str).str.upper() == serial.upper()]
+                if fleet_match is None or fleet_match.empty:
+                    fleet_match = current_fleet_df[
+                        (current_fleet_df["Customer"].astype(str).str.upper() == customer.upper()) &
+                        (current_fleet_df["Model"].astype(str).str.contains(model.split()[0] if model else "ZZZZZ", case=False, na=False))
+                    ]
+                if fleet_match is not None and not fleet_match.empty:
+                    fleet_hrs = int(fleet_match.iloc[0].get("Eng Hrs", 0) or 0)
+                    if fleet_hrs > current_hours:
+                        current_hours = fleet_hrs  # Use whichever is higher
+
+            if current_hours > 0:
                 buffer = max(int(pm_interval * 0.10), 25)  # 10% of interval, minimum 25 hrs
                 hours_remaining = next_pm - current_hours
 
