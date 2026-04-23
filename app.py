@@ -432,9 +432,8 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         else:
             score -= 5  # Penalize old purchases, they may not own it anymore
 
-        # Skip customers whose most recent purchase is 4+ years ago and only bought 1 machine
-        # They almost certainly don't own it anymore
-        if days_ago > 1460 and machines == 1:
+        # Skip customers whose most recent purchase is 5+ years ago and only bought 1 machine
+        if days_ago > 1825 and machines == 1:
             continue
 
         # Multiple brands = diversified fleet
@@ -455,9 +454,7 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         else:
             tier = "Low"
 
-        # Drop Low tier leads from equipment report since they lack enough signal
-        if tier == "Low":
-            continue
+        # Keep all tiers, reps can filter by tier in the UI
 
         # Next PM value estimate
         est_pm_value = ds_value if ds_value > 0 else 0
@@ -1795,14 +1792,15 @@ def generate_pdf(quote_data):
     make = quote_data.get("make", "")
     model = quote_data.get("model", "")
     serial = quote_data.get("serial", "")
+    machine_hrs = quote_data.get("machine_hours", 0)
     hrs_req = quote_data.get("hours_requested", 0)
 
     right_data = [
         [Paragraph("<b>MACHINE DETAILS</b>", styles["BoxLabel"])],
         [Paragraph(f"{make} {model}" if make else " ", styles["BoxValue"])],
         [Paragraph(f"<b>Serial:</b> {serial}" if serial else " ", styles["SmallNote"])],
+        [Paragraph(f"<b>Current Hours:</b> {machine_hrs:,}" if machine_hrs else " ", styles["SmallNote"])],
         [Paragraph(f"<b>Hours Requested:</b> {hrs_req:,}", styles["SmallNote"])],
-        [Paragraph(" ", styles["SmallNote"])],
     ]
     right_t = RLTable(right_data, colWidths=[half_w])
     right_t.setStyle(TableStyle([
@@ -2870,6 +2868,17 @@ with tab_leads:
 
         st.divider()
 
+        # Tier legend
+        tier_legend = (
+            '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;">'
+            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#C8102E;border-radius:2px;margin-right:4px;"></span><b>Top</b> Multi-machine fleet, active spend, strong PM fit</div>'
+            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#F59E0B;border-radius:2px;margin-right:4px;"></span><b>High</b> Good fleet or spend, solid opportunity</div>'
+            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#3B82F6;border-radius:2px;margin-right:4px;"></span><b>Medium</b> Some signal, needs discovery</div>'
+            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#9CA3AF;border-radius:2px;margin-right:4px;"></span><b>Low</b> Minimal activity, worth a call</div>'
+            '</div>'
+        )
+        st.markdown(tier_legend, unsafe_allow_html=True)
+
         # Filters
         col1, col2 = st.columns(2)
         with col1:
@@ -3034,12 +3043,14 @@ with tab_leads:
                                     q_model = st.selectbox("Model", [""] + get_models_for_brand(q_make), key=f"qmd_{cust_key}")
                                 else:
                                     q_model = ""
-                            qc1, qc2, qc3 = st.columns(3)
+                            qc1, qc2, qc3, qc4 = st.columns(4)
                             with qc1:
                                 q_serial = st.text_input("Serial #", key=f"qsr_{cust_key}")
                             with qc2:
-                                q_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key=f"qh_{cust_key}")
+                                q_machine_hrs = st.number_input("Machine Hours", min_value=0, max_value=30000, value=0, step=100, key=f"qmh_{cust_key}")
                             with qc3:
+                                q_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key=f"qh_{cust_key}")
+                            with qc4:
                                 q_rep = st.text_input("Rep", value=st.session_state.get("rep_name", ""), key=f"qr_{cust_key}")
                             q_notes = st.text_input("Notes", key=f"qn_{cust_key}", placeholder="Machine condition, special requirements...")
 
@@ -3053,6 +3064,7 @@ with tab_leads:
                                         "customer_name": cust_name, "branch": st.session_state.get("branch_name", ""),
                                         "rep": q_rep, "service_type": q_service, "make": q_make,
                                         "model": q_model, "serial": q_serial,
+                                        "machine_hours": q_machine_hrs,
                                         "hours_requested": q_hours,
                                         "travel_time": q_travel if q_service == "Field" else 0,
                                         "travel_cost": travel_cost, "notes": q_notes,
@@ -3322,9 +3334,9 @@ with tab_calc:
     with cc1:
         calc_serial = st.text_input("Serial Number", key="calc_serial")
     with cc2:
-        calc_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key="calc_hrs")
+        calc_machine_hrs = st.number_input("Current Machine Hours", min_value=0, max_value=30000, value=0, step=100, key="calc_mach_hrs")
     with cc3:
-        pass
+        calc_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key="calc_hrs")
 
     st.divider()
     calc_notes = st.text_area("Notes", placeholder="Machine condition, special requirements, etc.", height=80, key="calc_notes")
@@ -3341,6 +3353,7 @@ with tab_calc:
                 "customer_name": calc_customer, "branch": calc_branch, "rep": calc_rep,
                 "service_type": calc_service, "make": calc_make,
                 "model": calc_model, "serial": calc_serial,
+                "machine_hours": calc_machine_hrs,
                 "hours_requested": calc_hours,
                 "travel_time": calc_travel if calc_service == "Field" else 0,
                 "travel_cost": calc_travel_cost, "notes": calc_notes,
