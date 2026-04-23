@@ -1281,7 +1281,8 @@ def get_dealsheet_pm_value(alert_model, eng_hours):
 
 
 def get_next_pm_hours(alert_model, eng_hours):
-    """Return the next PM service hour milestone for display."""
+    """Return the next PM service hour milestone for display.
+    Handles interval overlaps correctly (same logic as get_dealsheet_pm_value)."""
     ds_key = match_model_to_dealsheet(alert_model)
     if not ds_key:
         return 0
@@ -1290,15 +1291,27 @@ def get_next_pm_hours(alert_model, eng_hours):
         return 0
     hrs = max(int(eng_hours or 0), 0)
 
-    milestones = []
-    if ds["hr_i"] and hrs < ds["hr_i"]:
-        milestones.append(ds["hr_i"])
-    for interval_key in ["hr_1", "hr_2", "hr_3", "hr_s"]:
-        interval = ds[interval_key]
-        if interval:
-            next_hit = ((hrs // interval) + 1) * interval
-            milestones.append(next_hit)
-    return min(milestones) if milestones else 0
+    candidates = []
+    if ds["hr_i"] and ds["cost_i"] and hrs < ds["hr_i"]:
+        candidates.append(ds["hr_i"])
+    if ds["hr_1"] and ds["cost_1"]:
+        next_hr1 = ((hrs // ds["hr_1"]) + 1) * ds["hr_1"]
+        # Only if it doesn't coincide with interval 2
+        if ds["hr_2"] and next_hr1 % ds["hr_2"] != 0:
+            candidates.append(next_hr1)
+    if ds["hr_2"] and ds["cost_2"]:
+        next_hr2 = ((hrs // ds["hr_2"]) + 1) * ds["hr_2"]
+        if ds["hr_3"] and next_hr2 % ds["hr_3"] != 0:
+            candidates.append(next_hr2)
+        elif not ds["hr_3"]:
+            candidates.append(next_hr2)
+    if ds["hr_3"] and ds["cost_3"]:
+        next_hr3 = ((hrs // ds["hr_3"]) + 1) * ds["hr_3"]
+        candidates.append(next_hr3)
+    if ds["hr_s"] and ds["cost_s"]:
+        next_hrs = ((hrs // ds["hr_s"]) + 1) * ds["hr_s"]
+        candidates.append(next_hrs)
+    return min(candidates) if candidates else 0
 
 def parse_procare_detailed(file):
     """Parse ProCare data with hours info for expiration detection."""
@@ -2294,7 +2307,7 @@ def save_pm_tracker_entry(data):
         pm_interval = 500  # default
         ds = PM_DEALSHEET.get(data.get("model", ""))
         if ds:
-            intervals = [ds.get(f"hr_{k}") for k in ["1", "2", "3"] if ds.get(f"hr_{k}")]
+            intervals = [ds.get(f"hr_{k}") for k in ["i", "1", "2", "3", "s"] if ds.get(f"hr_{k}")]
             if intervals:
                 pm_interval = min(intervals)
         eng_hours = int(data.get("eng_hours", 0))
@@ -2437,27 +2450,32 @@ def hubspot_create_or_update_pm_deal(deal_data):
 
     try:
         # Search for existing PM deal in our pipeline
+        # Use first word of customer name as search token (CONTAINS_TOKEN needs single tokens)
+        search_token = customer.split()[0] if customer.strip() else "PM"
         search_payload = {
             "filterGroups": [{
                 "filters": [
-                    {"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": customer},
+                    {"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": search_token},
                     {"propertyName": "pipeline", "operator": "EQ", "value": pipeline_id},
                 ]
             }],
             "properties": ["dealname", "dealstage", "pipeline", "amount"],
             "limit": 10,
         }
-        resp = requests.post(
-            "https://api.hubapi.com/crm/v3/objects/deals/search",
-            headers=headers, json=search_payload, timeout=15
-        )
         existing_deal_id = None
-        if resp.status_code == 200:
-            for d in resp.json().get("results", []):
-                dn = (d.get("properties", {}).get("dealname") or "").upper()
-                if model.upper() in dn and customer.upper() in dn:
-                    existing_deal_id = d["id"]
-                    break
+        try:
+            resp = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/deals/search",
+                headers=headers, json=search_payload, timeout=15
+            )
+            if resp.status_code == 200:
+                for d in resp.json().get("results", []):
+                    dn = (d.get("properties", {}).get("dealname") or "").upper()
+                    if customer.upper()[:10] in dn:  # Partial match on customer name
+                        existing_deal_id = d["id"]
+                        break
+        except Exception:
+            pass  # If search fails, just create a new deal
 
         # Map status to our PM pipeline stages
         status = deal_data.get("status", "Quoted")
@@ -2492,6 +2510,17 @@ def hubspot_create_or_update_pm_deal(deal_data):
                 new_id = resp.json().get("id")
                 _associate_deal_to_company(new_id, customer, headers)
                 return new_id
+            # If pipeline stage is invalid, try without dealstage
+            if resp.status_code == 400:
+                properties.pop("dealstage", None)
+                resp = requests.post(
+                    "https://api.hubapi.com/crm/v3/objects/deals",
+                    headers=headers, json={"properties": properties}, timeout=15
+                )
+                if resp.status_code == 201:
+                    new_id = resp.json().get("id")
+                    _associate_deal_to_company(new_id, customer, headers)
+                    return new_id
             return None
     except Exception:
         return None
@@ -2644,14 +2673,20 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
     today = datetime.now()
 
     for _, row in pm_tracker_df.iterrows():
-        customer = str(row.get("Customer", ""))
-        model = str(row.get("Model", ""))
-        serial = str(row.get("Serial", ""))
-        status = str(row.get("Status", "")).lower()
-        next_pm = int(row.get("Next PM Due (hrs)", 0) or 0)
-        pm_interval = int(row.get("PM Interval (hrs)", 500) or 500)
-        hs_deal_id = str(row.get("HubSpot Deal ID", ""))
-        last_contact = str(row.get("Last Contact Date", ""))
+        customer = str(row.get("Customer", "")).strip()
+        model = str(row.get("Model", "")).strip()
+        serial = str(row.get("Serial", "")).strip()
+        status = str(row.get("Status", "")).strip().lower()
+        try:
+            next_pm = int(float(str(row.get("Next PM Due (hrs)", 0)).strip() or 0))
+        except (ValueError, TypeError):
+            next_pm = 0
+        try:
+            pm_interval = int(float(str(row.get("PM Interval (hrs)", 500)).strip() or 500))
+        except (ValueError, TypeError):
+            pm_interval = 500
+        hs_deal_id = str(row.get("HubSpot Deal ID", "")).strip()
+        last_contact = str(row.get("Last Contact Date", "")).strip()
 
         # Skip closed/lost deals
         if status in ("not interested", "closed", "lost"):
@@ -2660,7 +2695,10 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
         # 1. Check hours threshold
         if next_pm > 0:
             # Use hours from PM Tracker row first (most up to date)
-            current_hours = int(row.get("Eng Hours at Deal", 0) or 0)
+            try:
+                current_hours = int(float(str(row.get("Eng Hours at Deal", 0)).strip() or 0))
+            except (ValueError, TypeError):
+                current_hours = 0
 
             # Try to get fresher hours from fleet data if available
             if current_fleet_df is not None and not current_fleet_df.empty:
@@ -2733,11 +2771,19 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
 def push_alerts_to_hubspot(alerts):
     """Push alert flags to HubSpot deals for workflow triggers.
     Creates the PM deal in HubSpot first if it doesn't exist."""
+    if not HUBSPOT_TOKEN:
+        return 0
     pushed = 0
     for alert in alerts:
         deal_id = alert.get("hs_deal_id", "")
+        # Clean up deal_id
+        if deal_id and str(deal_id).strip() not in ("", "nan", "None", "0"):
+            deal_id = str(deal_id).strip()
+        else:
+            deal_id = None
+
         # If no HubSpot deal exists, create one first
-        if not deal_id or deal_id == "nan" or deal_id == "":
+        if not deal_id:
             deal_data = {
                 "customer": alert.get("customer", ""),
                 "model": alert.get("model", ""),
@@ -2746,8 +2792,9 @@ def push_alerts_to_hubspot(alerts):
                 "contract_value": 0,
             }
             deal_id = hubspot_create_or_update_pm_deal(deal_data)
+
         if deal_id:
-            success = hubspot_update_pm_alert(deal_id, alert["type"], alert["message"])
+            success = hubspot_update_pm_alert(str(deal_id), alert["type"], alert["message"])
             if success:
                 pushed += 1
     return pushed
@@ -3612,7 +3659,7 @@ with tab_tracker:
             st.caption(f"Showing {len(t_display)} deals")
 
             # Render each deal as a compact card row
-            for idx, row in t_display.iterrows():
+            for row_pos, (idx, row) in enumerate(t_display.iterrows()):
                 t_cust = str(row.get("Customer", ""))
                 t_model = str(row.get("Model", ""))
                 t_status = str(row.get("Status", ""))
@@ -3703,7 +3750,7 @@ with tab_tracker:
                             "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
                             "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
                         }
-                        if update_pm_tracker_row(idx, updates):
+                        if update_pm_tracker_row(row_pos, updates):
                             # Sync to HubSpot PM pipeline
                             hs_data = {
                                 "customer": t_cust,
