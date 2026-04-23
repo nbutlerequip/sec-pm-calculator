@@ -2821,7 +2821,9 @@ with tab_leads:
     if not pm_tracker.empty:
         fleet_for_alerts = all_leads if not all_leads.empty else None
         pm_alerts = check_pm_alerts(pm_tracker, fleet_for_alerts)
-        # Build lookup: customer -> list of alerts
+        # Push alerts to HubSpot deals for workflow triggers
+        if pm_alerts:
+            push_alerts_to_hubspot(pm_alerts)
     pm_alerts_by_customer = {}
     for a in pm_alerts:
         cust = a.get("customer", "").upper()
