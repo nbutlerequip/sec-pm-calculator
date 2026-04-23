@@ -2520,14 +2520,93 @@ def _associate_deal_to_company(deal_id, customer_name, headers):
     except Exception:
         pass
 
+def _ensure_pm_alert_properties():
+    """Create custom deal properties for PM alerts if they don't exist.
+    These properties let HubSpot workflows trigger on alert changes."""
+    if not HUBSPOT_TOKEN:
+        return False
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    props_to_create = [
+        {
+            "name": "pm_alert_active",
+            "label": "PM Alert Active",
+            "type": "enumeration",
+            "fieldType": "select",
+            "groupName": "deal_information",
+            "options": [
+                {"label": "Yes", "value": "yes"},
+                {"label": "No", "value": "no"},
+            ],
+        },
+        {
+            "name": "pm_alert_type",
+            "label": "PM Alert Type",
+            "type": "enumeration",
+            "fieldType": "select",
+            "groupName": "deal_information",
+            "options": [
+                {"label": "Hours Overdue", "value": "hours_overdue"},
+                {"label": "Hours Approaching", "value": "hours_approaching"},
+                {"label": "Follow-up Overdue", "value": "followup_overdue"},
+            ],
+        },
+        {
+            "name": "pm_alert_message",
+            "label": "PM Alert Message",
+            "type": "string",
+            "fieldType": "text",
+            "groupName": "deal_information",
+        },
+        {
+            "name": "pm_alert_date",
+            "label": "PM Alert Date",
+            "type": "string",
+            "fieldType": "text",
+            "groupName": "deal_information",
+        },
+    ]
+    created = 0
+    for prop in props_to_create:
+        try:
+            resp = requests.post(
+                "https://api.hubapi.com/crm/v3/properties/deals",
+                headers=headers, json=prop, timeout=10
+            )
+            if resp.status_code in (201, 409):  # 409 = already exists
+                created += 1
+        except Exception:
+            pass
+    return created > 0
+
+@st.cache_data(ttl=86400)
+def setup_pm_alert_properties():
+    """One-time setup: create PM alert properties in HubSpot."""
+    return _ensure_pm_alert_properties()
+
 def hubspot_update_pm_alert(deal_id, alert_type, message):
-    """Add an alert note to a PM deal in HubSpot.
-    Uses standard notes/engagements so no custom properties are needed."""
+    """Update a PM deal with alert properties that HubSpot workflows can trigger on.
+    Sets pm_alert_active=yes so a workflow can fire notifications."""
     if not HUBSPOT_TOKEN or not deal_id:
         return False
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+
+    # Make sure alert properties exist
+    setup_pm_alert_properties()
+
     try:
-        # Create a note (engagement) on the deal with the alert info
+        properties = {
+            "pm_alert_active": "yes",
+            "pm_alert_type": alert_type,
+            "pm_alert_message": message,
+            "pm_alert_date": datetime.now().strftime("%Y-%m-%d"),
+        }
+        resp = requests.patch(
+            f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+            headers=headers, json={"properties": properties}, timeout=15
+        )
+        if resp.status_code == 200:
+            return True
+        # If properties failed (permissions issue), fall back to note
         note_body = f"PM ALERT ({alert_type.upper()}): {message}"
         note_payload = {
             "properties": {
@@ -2653,6 +2732,81 @@ def push_alerts_to_hubspot(alerts):
             if success:
                 pushed += 1
     return pushed
+
+def setup_hubspot_pm_workflow():
+    """Create the PM Alert notification workflow in HubSpot.
+    Triggers when pm_alert_active is set to 'yes' on a deal in the PM pipeline.
+    Sends an internal email notification to the deal owner."""
+    if not HUBSPOT_TOKEN:
+        return False, "No HubSpot token configured"
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+
+    # First ensure properties exist
+    _ensure_pm_alert_properties()
+
+    # Get the PM pipeline ID
+    pipeline_id, _ = get_or_create_pm_pipeline()
+    if not pipeline_id:
+        return False, "Could not find or create PM pipeline"
+
+    # Check if workflow already exists
+    try:
+        resp = requests.get(
+            "https://api.hubapi.com/automation/v4/flows",
+            headers=headers, timeout=15
+        )
+        if resp.status_code == 200:
+            for flow in resp.json().get("results", []):
+                if flow.get("name") == "PM Alert Notification":
+                    return True, "Workflow already exists"
+    except Exception:
+        pass
+
+    # Create the workflow
+    # HubSpot v4 Flows API
+    try:
+        workflow = {
+            "name": "PM Alert Notification",
+            "type": "DEAL_FLOW",
+            "onlyEnrollsManually": False,
+            "enrollmentTriggerConfig": {
+                "triggerSets": [{
+                    "triggers": [{
+                        "filterBranch": {
+                            "filterBranchType": "AND",
+                            "filters": [{
+                                "property": "pm_alert_active",
+                                "operation": {
+                                    "operationType": "ENUMERATION",
+                                    "operator": "IS_ANY_OF",
+                                    "values": ["yes"]
+                                }
+                            }]
+                        }
+                    }]
+                }]
+            },
+            "actions": [{
+                "actionType": "SEND_INTERNAL_EMAIL",
+                "actionId": "1",
+                "recipientUserIds": [],
+                "dealOwner": True,
+                "subject": "PM Alert: Action Needed",
+                "body": "A PM alert has been triggered.\n\nAlert: {{deal.pm_alert_message}}\nType: {{deal.pm_alert_type}}\nDeal: {{deal.dealname}}\n\nOpen the PM Tool to take action."
+            }]
+        }
+        resp = requests.post(
+            "https://api.hubapi.com/automation/v4/flows",
+            headers=headers, json=workflow, timeout=15
+        )
+        if resp.status_code in (200, 201):
+            return True, "Workflow created successfully"
+        else:
+            error_msg = resp.json().get("message", resp.text[:200]) if resp.text else f"Status {resp.status_code}"
+            # If v4 API doesn't work, provide manual instructions
+            return False, f"Auto-setup returned: {error_msg}. See manual setup steps below."
+    except Exception as e:
+        return False, f"Could not create workflow: {str(e)[:100]}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3542,7 +3696,7 @@ with tab_tracker:
 
         # Export and actions
         st.divider()
-        exp1, exp2, _ = st.columns([1, 1, 3])
+        exp1, exp2, exp3 = st.columns(3)
         with exp1:
             csv = t_display.to_csv(index=False).encode("utf-8")
             st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
@@ -3550,6 +3704,18 @@ with tab_tracker:
             if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                 pushed = push_alerts_to_hubspot(tracker_alerts)
                 st.success(f"Pushed {pushed} alert{'s' if pushed != 1 else ''} to HubSpot — workflow will notify reps")
+        with exp3:
+            if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
+                with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
+                    success, msg = setup_hubspot_pm_workflow()
+                if success:
+                    st.success(f"HubSpot setup complete: {msg}")
+                else:
+                    st.warning(msg)
+                    st.caption("Manual setup: In HubSpot go to Automation > Workflows > Create deal-based workflow. "
+                              "Trigger: deal property 'PM Alert Active' is 'Yes'. "
+                              "Action: Send internal notification to deal owner. "
+                              "Use {{deal.pm_alert_message}} in the notification body.")
 
 
 # ═══════════════════════════════════════════════════════════
