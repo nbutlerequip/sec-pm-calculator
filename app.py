@@ -2938,7 +2938,7 @@ with tab_leads:
                         f'<div style="margin-top:12px;">{value_pills}</div>'
                         f'</div>'
                     )
-                    st.markdown(card_html, unsafe_allow_html=True)
+                    st.html(card_html)
 
                     cust_key = cust_name.replace(" ", "_")[:20]
 
