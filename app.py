@@ -2731,11 +2731,22 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
     return alerts
 
 def push_alerts_to_hubspot(alerts):
-    """Push alert flags to HubSpot deals for workflow triggers."""
+    """Push alert flags to HubSpot deals for workflow triggers.
+    Creates the PM deal in HubSpot first if it doesn't exist."""
     pushed = 0
     for alert in alerts:
         deal_id = alert.get("hs_deal_id", "")
-        if deal_id and deal_id != "nan":
+        # If no HubSpot deal exists, create one first
+        if not deal_id or deal_id == "nan" or deal_id == "":
+            deal_data = {
+                "customer": alert.get("customer", ""),
+                "model": alert.get("model", ""),
+                "serial": alert.get("serial", ""),
+                "status": "Quoted",
+                "contract_value": 0,
+            }
+            deal_id = hubspot_create_or_update_pm_deal(deal_data)
+        if deal_id:
             success = hubspot_update_pm_alert(deal_id, alert["type"], alert["message"])
             if success:
                 pushed += 1
