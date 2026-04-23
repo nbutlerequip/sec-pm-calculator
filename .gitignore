@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 venv/
+data/category_parts.xlsx  
+data/parts_half1.xlsx  
+data/_acct_cats.json 

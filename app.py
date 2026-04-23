@@ -289,6 +289,20 @@ def load_equipment_report():
                 return pd.DataFrame()
     return pd.DataFrame()
 
+@st.cache_data(ttl=3600)
+def load_part_categories():
+    """Load customer -> part categories lookup from pre-built JSON.
+    Returns dict of CUSTOMER_NAME_UPPER -> list of category strings."""
+    cat_file = DATA_DIR / "customer_part_categories.json"
+    if cat_file.exists():
+        try:
+            import json
+            with open(cat_file) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
 def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
     """Build lead rows from the equipment report for customers not already in other sources."""
     if equip_df.empty:
@@ -2724,6 +2738,16 @@ with tab_leads:
                 all_leads.loc[ni_mask, "Lead Category"].astype(str) + " (Not Interested)"
             )
 
+    # Tag leads with part categories they buy
+    if not all_leads.empty:
+        part_cats = load_part_categories()
+        if part_cats:
+            all_leads["Parts Categories"] = all_leads["Customer"].apply(
+                lambda c: ", ".join(part_cats.get(str(c).strip().upper(), []))
+            )
+        else:
+            all_leads["Parts Categories"] = ""
+
     st.session_state.leads_df = all_leads
     st.session_state.procare_vins = procare_vins
 
@@ -2843,6 +2867,18 @@ with tab_leads:
                             pills += f'<span style="display:inline-block;color:#9CA3AF;font-size:12px;padding:3px 4px;">+{len(machine_list)-8} more</span>'
                         machines_html = f'<div style="margin:10px 0 0 0;">{pills}</div>'
 
+                    # Part categories pills
+                    parts_cats_html = ""
+                    raw_cats = row.get("Parts Categories", "") or ""
+                    if raw_cats:
+                        cat_list = [c.strip() for c in raw_cats.split(",") if c.strip()]
+                        if cat_list:
+                            cat_pills = "".join(
+                                f'<span style="display:inline-block;background:#EEF2FF;color:#4338CA;font-size:11px;padding:2px 9px;border-radius:10px;margin:2px 4px 2px 0;font-weight:500;">{c}</span>'
+                                for c in cat_list
+                            )
+                            parts_cats_html = f'<div style="margin:8px 0 0 0;"><span style="font-size:10px;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px;margin-right:6px;">Parts:</span>{cat_pills}</div>'
+
                     # Value pills
                     value_pills = ""
                     if pm_value > 0:
@@ -2895,6 +2931,7 @@ with tab_leads:
                             </div>
                         </div>
                         {machines_html}
+                        {parts_cats_html}
                         <div style="margin-top:12px;">{value_pills}</div>
                     </div>'''
                     st.markdown(card_html, unsafe_allow_html=True)
