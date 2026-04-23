@@ -1235,15 +1235,25 @@ def parse_procare_stops(file):
     machines["VIN"] = machines["VinHrs"].apply(lambda x: str(x).split(" - ")[0].strip())
     return set(machines["VIN"].unique())
 
+MACHINE_LIFECYCLE_HRS = 10000  # Typical heavy equipment lifecycle
+
 def get_dealsheet_pm_value(alert_model, eng_hours):
-    """Calculate real PM value for a machine using dealsheet pricing and actual hours."""
+    """Calculate remaining PM opportunity for a machine.
+    Returns the cost of PM services from current hours to end of lifecycle (10,000 hrs).
+    This tells reps how much PM revenue is still on the table."""
     ds_key = match_model_to_dealsheet(alert_model)
     if not ds_key:
         return 0.0, None
-    hrs = max(int(eng_hours or 0), 500)  # Minimum 500 hrs for estimate
-    result = calculate_pm_cost(ds_key, hrs)
-    if result:
-        return float(result["total_cost"]), ds_key
+    hrs = max(int(eng_hours or 0), 100)
+    # PM cost for full lifecycle
+    full_result = calculate_pm_cost(ds_key, MACHINE_LIFECYCLE_HRS)
+    # PM cost already passed (services that would have happened before current hours)
+    past_result = calculate_pm_cost(ds_key, hrs)
+    if full_result and past_result:
+        remaining = max(0, float(full_result["total_cost"]) - float(past_result["total_cost"]))
+        return remaining, ds_key
+    elif full_result:
+        return float(full_result["total_cost"]), ds_key
     return 0.0, None
 
 def parse_procare_detailed(file):
@@ -2887,7 +2897,7 @@ with tab_leads:
                     # Value pills
                     value_pills = ""
                     if pm_value > 0:
-                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Est PM Value</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
+                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">PM Opportunity</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
                     if parts_opp > 0:
                         value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
 
