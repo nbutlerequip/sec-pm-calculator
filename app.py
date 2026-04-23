@@ -2733,6 +2733,7 @@ def push_alerts_to_hubspot(alerts):
                 pushed += 1
     return pushed
 
+@st.cache_data(ttl=86400)
 def setup_hubspot_pm_workflow():
     """Create the PM Alert notification workflow in HubSpot.
     Triggers when pm_alert_active is set to 'yes' on a deal in the PM pipeline.
@@ -2841,6 +2842,12 @@ with col_head_r:
         st.session_state.branch_name = None
         st.session_state.login_month = None
         st.rerun()
+
+# Auto-setup HubSpot PM pipeline, alert properties, and workflow (runs once, cached 24hrs)
+if HUBSPOT_TOKEN:
+    setup_pm_alert_properties()
+    get_or_create_pm_pipeline()
+    setup_hubspot_pm_workflow()
 
 # ═══════════════════════════════════════════════════════════
 # TABS
