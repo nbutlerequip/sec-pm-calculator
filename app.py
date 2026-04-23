@@ -2339,30 +2339,94 @@ def load_pm_tracker():
 
 
 # ═══════════════════════════════════════════════════════════
-# HUBSPOT WRITE-BACK (PM deals only, separate from reads)
+# HUBSPOT PM PIPELINE (dedicated pipeline, separate from sales)
+# ═══════════════════════════════════════════════════════════
+PM_PIPELINE_LABEL = "PM Service Pipeline"
+
+@st.cache_data(ttl=3600)
+def get_or_create_pm_pipeline():
+    """Get or create a dedicated PM Service pipeline in HubSpot.
+    Returns (pipeline_id, stage_map) or (None, None)."""
+    if not HUBSPOT_TOKEN:
+        return None, None
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+
+    # Define our PM-specific stages
+    pm_stages = [
+        {"label": "Lead Identified", "displayOrder": 0},
+        {"label": "Called", "displayOrder": 1},
+        {"label": "Quoted", "displayOrder": 2},
+        {"label": "In Progress", "displayOrder": 3},
+        {"label": "Sold", "displayOrder": 4, "metadata": {"isClosed": "true", "probability": "1.0"}},
+        {"label": "Not Interested", "displayOrder": 5, "metadata": {"isClosed": "true", "probability": "0.0"}},
+    ]
+
+    try:
+        # Check if PM pipeline already exists
+        resp = requests.get(
+            "https://api.hubapi.com/crm/v3/pipelines/deals",
+            headers=headers, timeout=15
+        )
+        if resp.status_code == 200:
+            for p in resp.json().get("results", []):
+                if p.get("label") == PM_PIPELINE_LABEL:
+                    # Found it, build stage map from existing stages
+                    stage_map = {}
+                    for s in p.get("stages", []):
+                        stage_map[s["label"]] = s["id"]
+                    return p["id"], stage_map
+
+        # Pipeline doesn't exist, create it
+        create_payload = {
+            "label": PM_PIPELINE_LABEL,
+            "displayOrder": 10,
+            "stages": pm_stages,
+        }
+        resp = requests.post(
+            "https://api.hubapi.com/crm/v3/pipelines/deals",
+            headers=headers, json=create_payload, timeout=15
+        )
+        if resp.status_code == 201:
+            pipeline = resp.json()
+            stage_map = {}
+            for s in pipeline.get("stages", []):
+                stage_map[s["label"]] = s["id"]
+            return pipeline["id"], stage_map
+    except Exception:
+        pass
+    return None, None
+
+
+# ═══════════════════════════════════════════════════════════
+# HUBSPOT WRITE-BACK (PM deals in dedicated pipeline)
 # ═══════════════════════════════════════════════════════════
 def hubspot_create_or_update_pm_deal(deal_data):
-    """Create or update a PM deal in HubSpot. Returns deal ID or None."""
+    """Create or update a PM deal in the dedicated PM Service Pipeline.
+    Completely separate from the regular sales pipeline."""
     if not HUBSPOT_TOKEN:
         return None
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
 
-    # Search for existing deal by customer + model + serial
+    # Get or create the dedicated PM pipeline
+    pipeline_id, stage_map = get_or_create_pm_pipeline()
+    if not pipeline_id or not stage_map:
+        return None
+
     customer = deal_data.get("customer", "")
     model = deal_data.get("model", "")
     serial = deal_data.get("serial", "")
-    deal_name = f"{customer} - PM {model}" + (f" ({serial})" if serial else "")
+    deal_name = f"PM: {customer} - {model}" + (f" ({serial})" if serial else "")
 
     try:
-        # Try to find an existing PM deal for this customer+model
+        # Search for existing PM deal in our pipeline
         search_payload = {
             "filterGroups": [{
                 "filters": [
                     {"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": customer},
-                    {"propertyName": "pm_eligible", "operator": "EQ", "value": "true"},
+                    {"propertyName": "pipeline", "operator": "EQ", "value": pipeline_id},
                 ]
             }],
-            "properties": ["dealname", "pm_status", "pm_contract_value", "dealstage"],
+            "properties": ["dealname", "dealstage", "pipeline", "amount"],
             "limit": 10,
         }
         resp = requests.post(
@@ -2377,65 +2441,34 @@ def hubspot_create_or_update_pm_deal(deal_data):
                     existing_deal_id = d["id"]
                     break
 
-        # Build properties
+        # Map status to our PM pipeline stages
         status = deal_data.get("status", "Quoted")
-        stage_map = {
-            "Quoted": "presentationscheduled",
-            "Called": "qualifiedtobuy",
-            "In Progress": "contractsent",
-            "Sold": "closedwon",
-            "Not Interested": "closedlost",
-        }
+        deal_stage = stage_map.get(status, stage_map.get("Quoted", ""))
+
         properties = {
             "dealname": deal_name,
-            "pm_eligible": "true",
-            "pm_status": status.lower(),
+            "pipeline": pipeline_id,
+            "dealstage": deal_stage,
             "amount": str(deal_data.get("contract_value", 0)),
-            "dealstage": stage_map.get(status, "presentationscheduled"),
         }
-        # Add PM-specific custom properties if they exist in HubSpot
-        pm_props = {
-            "pm_contract_value": str(deal_data.get("contract_value", 0)),
-            "pm_machine_model": model,
-            "pm_machine_serial": serial,
-            "pm_engine_hours": str(deal_data.get("eng_hours", 0)),
-            "pm_interval_hours": str(deal_data.get("pm_interval", 500)),
-            "pm_next_service_hours": str(deal_data.get("next_pm_hours", 0)),
-        }
-        # Only include PM props that HubSpot accepts (skip if they cause errors)
-        properties.update(pm_props)
 
         if existing_deal_id:
-            # Update existing deal
+            # Update existing deal (don't resend pipeline, just stage + amount)
+            update_props = {
+                "dealstage": deal_stage,
+                "amount": str(deal_data.get("contract_value", 0)),
+                "dealname": deal_name,
+            }
             resp = requests.patch(
                 f"https://api.hubapi.com/crm/v3/objects/deals/{existing_deal_id}",
-                headers=headers, json={"properties": properties}, timeout=15
-            )
-            if resp.status_code == 200:
-                return existing_deal_id
-            # If custom props failed, retry with just standard props
-            std_props = {k: v for k, v in properties.items() if not k.startswith("pm_") or k in ("pm_eligible", "pm_status")}
-            resp = requests.patch(
-                f"https://api.hubapi.com/crm/v3/objects/deals/{existing_deal_id}",
-                headers=headers, json={"properties": std_props}, timeout=15
+                headers=headers, json={"properties": update_props}, timeout=15
             )
             return existing_deal_id if resp.status_code == 200 else None
         else:
-            # Create new deal
+            # Create new deal in PM pipeline
             resp = requests.post(
                 "https://api.hubapi.com/crm/v3/objects/deals",
                 headers=headers, json={"properties": properties}, timeout=15
-            )
-            if resp.status_code == 201:
-                new_id = resp.json().get("id")
-                # Try to associate with matching company
-                _associate_deal_to_company(new_id, customer, headers)
-                return new_id
-            # Retry with just standard props if custom ones failed
-            std_props = {k: v for k, v in properties.items() if not k.startswith("pm_") or k in ("pm_eligible", "pm_status")}
-            resp = requests.post(
-                "https://api.hubapi.com/crm/v3/objects/deals",
-                headers=headers, json={"properties": std_props}, timeout=15
             )
             if resp.status_code == 201:
                 new_id = resp.json().get("id")
@@ -2470,22 +2503,29 @@ def _associate_deal_to_company(deal_id, customer_name, headers):
         pass
 
 def hubspot_update_pm_alert(deal_id, alert_type, message):
-    """Update a HubSpot deal with an alert flag for workflow triggers."""
+    """Add an alert note to a PM deal in HubSpot.
+    Uses standard notes/engagements so no custom properties are needed."""
     if not HUBSPOT_TOKEN or not deal_id:
         return False
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     try:
-        properties = {
-            "pm_alert_type": alert_type,  # "hours_approaching" or "followup_overdue"
-            "pm_alert_message": message,
-            "pm_alert_date": datetime.now().strftime("%Y-%m-%d"),
+        # Create a note (engagement) on the deal with the alert info
+        note_body = f"PM ALERT ({alert_type.upper()}): {message}"
+        note_payload = {
+            "properties": {
+                "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "hs_note_body": note_body,
+            },
+            "associations": [{
+                "to": {"id": deal_id},
+                "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 214}]
+            }]
         }
-        resp = requests.patch(
-            f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
-            headers=headers, json={"properties": properties}, timeout=15
+        resp = requests.post(
+            "https://api.hubapi.com/crm/v3/objects/notes",
+            headers=headers, json=note_payload, timeout=15
         )
-        # If custom alert props don't exist yet, that's okay, it'll fail silently
-        return resp.status_code == 200
+        return resp.status_code == 201
     except Exception:
         return False
 
