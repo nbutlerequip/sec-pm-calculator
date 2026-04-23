@@ -504,6 +504,78 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
 
 
 # ═══════════════════════════════════════════════════════════
+# SMS ALERTS (Twilio)
+# ═══════════════════════════════════════════════════════════
+TWILIO_SID = st.secrets.get("twilio_account_sid", "")
+TWILIO_AUTH = st.secrets.get("twilio_auth_token", "")
+TWILIO_FROM = st.secrets.get("twilio_phone_number", "")
+
+# Rep phone numbers by branch (add more as needed)
+REP_PHONE_NUMBERS = {
+    "default": "+17408258726",  # Nick Butler
+}
+
+def send_sms_alert(to_number, message):
+    """Send an SMS alert via Twilio."""
+    if not all([TWILIO_SID, TWILIO_AUTH, TWILIO_FROM]):
+        return False
+    try:
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json"
+        resp = requests.post(url, auth=(TWILIO_SID, TWILIO_AUTH), data={
+            "From": TWILIO_FROM,
+            "To": to_number,
+            "Body": message,
+        }, timeout=15)
+        return resp.status_code == 201
+    except Exception:
+        return False
+
+def send_pm_alert_sms(alerts, rep_phone=None):
+    """Send SMS notifications for PM alerts.
+    Groups alerts into a single message per rep."""
+    phone = rep_phone or REP_PHONE_NUMBERS.get("default", "")
+    if not phone:
+        return 0
+    if not phone.startswith("+"):
+        phone = "+1" + phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+
+    # Group alerts by severity
+    critical = [a for a in alerts if a.get("severity") == "critical"]
+    high = [a for a in alerts if a.get("severity") == "high"]
+    medium = [a for a in alerts if a.get("severity") == "medium"]
+
+    lines = ["SEC PM ALERT"]
+    if critical:
+        lines.append("")
+        lines.append(f"OVERDUE ({len(critical)}):")
+        for a in critical[:5]:
+            lines.append(f"  {a['customer']} - {a['message']}")
+    if high:
+        lines.append("")
+        lines.append(f"ACTION NEEDED ({len(high)}):")
+        for a in high[:5]:
+            lines.append(f"  {a['customer']} - {a['message']}")
+    if medium:
+        lines.append("")
+        lines.append(f"FOLLOW UP ({len(medium)}):")
+        for a in medium[:3]:
+            lines.append(f"  {a['customer']} - {a['message']}")
+
+    total = len(critical) + len(high) + len(medium)
+    shown = min(len(critical), 5) + min(len(high), 5) + min(len(medium), 3)
+    if total > shown:
+        lines.append(f"  +{total - shown} more")
+
+    lines.append("")
+    lines.append("Open PM Tool to take action")
+
+    message = "\n".join(lines)
+    if send_sms_alert(phone, message):
+        return total
+    return 0
+
+
+# ═══════════════════════════════════════════════════════════
 # HUBSPOT ENRICHMENT
 # ═══════════════════════════════════════════════════════════
 HUBSPOT_TOKEN = st.secrets.get("hubspot_token", "")
@@ -3540,9 +3612,9 @@ with tab_tracker:
                         else:
                             st.warning("Could not save update. Check Google Sheets connection.")
 
-        # Export
+        # Export and actions
         st.divider()
-        exp1, exp2, _ = st.columns([1, 1, 3])
+        exp1, exp2, exp3 = st.columns([1, 1, 1])
         with exp1:
             csv = t_display.to_csv(index=False).encode("utf-8")
             st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
@@ -3550,6 +3622,13 @@ with tab_tracker:
             if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                 pushed = push_alerts_to_hubspot(tracker_alerts)
                 st.success(f"Pushed {pushed} alert{'s' if pushed != 1 else ''} to HubSpot")
+        with exp3:
+            if tracker_alerts and st.button("Text Alert to Rep", use_container_width=True, key="trk_sms"):
+                sent = send_pm_alert_sms(tracker_alerts)
+                if sent:
+                    st.success(f"Sent text alert covering {sent} machine{'s' if sent != 1 else ''}")
+                else:
+                    st.warning("Could not send text. Check Twilio credentials in Streamlit secrets.")
 
 
 # ═══════════════════════════════════════════════════════════
