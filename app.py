@@ -184,6 +184,8 @@ if "branch_name" not in st.session_state:
     st.session_state.branch_name = None
 if "login_month" not in st.session_state:
     st.session_state.login_month = None
+if "current_quote" not in st.session_state:
+    st.session_state.current_quote = {}
 
 # ─── Google Sheets ───
 def get_gsheet_connection():
@@ -2633,7 +2635,7 @@ with col_head_r:
 # ═══════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════
-tab_leads, tab_history = st.tabs(["Lead Discovery", "Quote History"])
+tab_leads, tab_calc, tab_history = st.tabs(["Lead Discovery", "PM Calculator", "Quote History"])
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1: LEAD DISCOVERY
@@ -3285,7 +3287,129 @@ with tab_leads:
 
 
 # ═══════════════════════════════════════════════════════════
-# TAB 2: QUOTE HISTORY
+# TAB 2: STANDALONE PM CALCULATOR
+# ═══════════════════════════════════════════════════════════
+with tab_calc:
+    st.subheader("Customer & Job Info")
+
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        calc_customer = st.text_input("Customer Name", key="calc_cust")
+    with cc2:
+        calc_branch = st.selectbox("Branch", [""] + BRANCH_NAMES, index=(BRANCH_NAMES.index(st.session_state.branch_name) + 1) if st.session_state.branch_name in BRANCH_NAMES else 0, key="calc_branch")
+    with cc3:
+        calc_rep = st.text_input("Service Rep", value=st.session_state.get("rep_name", ""), key="calc_rep")
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        calc_service = st.selectbox("Field or Shop", SERVICE_TYPES, key="calc_svc")
+    with cc2:
+        calc_travel = st.number_input("Travel Time (minutes, one way)", min_value=0, max_value=480, value=0, step=15, key="calc_travel")
+
+    st.divider()
+    st.subheader("Machine Info")
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        calc_make = st.selectbox("Make", [""] + sorted(PM_BRANDS.keys()), key="calc_make")
+    with cc2:
+        if calc_make and calc_make in PM_BRANDS:
+            calc_model = st.selectbox("Model", [""] + get_models_for_brand(calc_make), key="calc_model")
+        else:
+            calc_model = ""
+
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        calc_serial = st.text_input("Serial Number", key="calc_serial")
+    with cc2:
+        calc_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key="calc_hrs")
+    with cc3:
+        pass
+
+    st.divider()
+    calc_notes = st.text_area("Notes", placeholder="Machine condition, special requirements, etc.", height=80, key="calc_notes")
+
+    st.divider()
+    calc_can_calc = bool(calc_make and calc_model and calc_model in PM_DEALSHEET)
+
+    if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not calc_can_calc, key="calc_btn"):
+        result = calculate_pm_cost(calc_model, calc_hours)
+        if result:
+            calc_travel_cost = round((calc_travel / 60) * 225 * 2, 2) if calc_service == "Field" and calc_travel > 0 else 0
+            st.session_state.current_quote = {
+                "date": datetime.now().strftime("%m/%d/%Y"),
+                "customer_name": calc_customer, "branch": calc_branch, "rep": calc_rep,
+                "service_type": calc_service, "make": calc_make,
+                "model": calc_model, "serial": calc_serial,
+                "hours_requested": calc_hours,
+                "travel_time": calc_travel if calc_service == "Field" else 0,
+                "travel_cost": calc_travel_cost, "notes": calc_notes,
+                "intervals": result["intervals"],
+                "total_cost": result["total_cost"],
+                "annual_pm_price": result["total_cost"] + calc_travel_cost,
+            }
+
+    if st.session_state.get("current_quote"):
+        q = st.session_state.current_quote
+        st.divider()
+        st.subheader("PM Contract Pricing")
+
+        if "intervals" in q and q["intervals"]:
+            interval_rows = []
+            for iv in q["intervals"]:
+                interval_rows.append({
+                    "Service": iv["name"],
+                    "Hour Interval": f"{iv['hours']:,} hr",
+                    "Qty": iv["qty"],
+                    "Cost (Per)": f"${iv['cost_per']:,.0f}",
+                    "Subtotal": f"${iv['subtotal']:,.0f}",
+                })
+            st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+
+        calc_tc = q.get("travel_cost", 0)
+        if calc_tc > 0:
+            st.markdown(f"**Travel:** ${calc_tc:,.0f}")
+
+        st.markdown(
+            f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;">'
+            f'<div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div>'
+            f'<div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q["annual_pm_price"]:,.0f}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            pdf_buf = generate_pdf(q)
+            safe = (calc_customer or "Quote").replace(" ", "_").replace("/", "-")
+            date_str = datetime.now().strftime("%m-%d-%Y")
+            st.download_button("Download PDF Quote", data=pdf_buf, file_name=f"SEC_PM_Quote_{safe}_{date_str}.pdf", mime="application/pdf", use_container_width=True, key="calc_pdf")
+        with rc2:
+            if st.button("Save Quote", use_container_width=True, type="secondary", key="calc_save"):
+                saved = save_quote_to_sheet(q)
+                if calc_customer:
+                    save_tracking_entry(calc_customer, "Quoted", f"{q.get('make','')} {q.get('model','')}", q.get("annual_pm_price", 0))
+                pm_entry = {
+                    "customer": calc_customer,
+                    "branch": calc_branch,
+                    "rep": calc_rep,
+                    "make": calc_make,
+                    "model": calc_model,
+                    "serial": calc_serial,
+                    "eng_hours": calc_hours,
+                    "contract_value": q.get("annual_pm_price", 0),
+                    "status": "Quoted",
+                    "notes": calc_notes,
+                }
+                save_pm_tracker_entry(pm_entry)
+                hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
+                st.success("Quote saved" if saved else "Saved locally")
+        with rc3:
+            if st.button("Clear / New Quote", use_container_width=True, key="calc_clear"):
+                st.session_state.current_quote = {}
+                st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 3: QUOTE HISTORY
 # ═══════════════════════════════════════════════════════════
 with tab_history:
     st.subheader("Quote History & Tracking")
