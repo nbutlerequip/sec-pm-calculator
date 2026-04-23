@@ -3673,15 +3673,14 @@ with tab_tracker:
                         new_notes = st.text_input("Notes", value=t_notes if t_notes != "nan" else "", key=f"{t_row_key}_notes")
 
                     if st.button("Save Update", key=f"{t_row_key}_save", type="primary"):
-                        # Calculate new next PM due based on updated hours
-                        pm_interval = int(row.get("PM Interval (hrs)", 500) or 500)
-                        new_next_pm = ((new_hours // pm_interval) + 1) * pm_interval if new_hours > 0 and pm_interval > 0 else t_next_pm
+                        # Keep existing next PM due — don't recalculate.
+                        # The alert engine compares current hours vs next PM to detect overdue.
+                        # Next PM only advances when the rep manually marks the PM as completed.
 
                         updates = {
                             "Status": new_status,
                             "Eng Hours at Deal": new_hours,
                             "Notes": new_notes,
-                            "Next PM Due (hrs)": new_next_pm,
                             "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
                             "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
                         }
