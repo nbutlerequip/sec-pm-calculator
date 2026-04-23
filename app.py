@@ -2337,6 +2337,24 @@ def load_pm_tracker():
     except Exception:
         return pd.DataFrame()
 
+def update_pm_tracker_row(row_index, updates):
+    """Update specific cells in a PM Tracker row.
+    row_index is 0-based data row (header = row 1, first data = row 2).
+    updates is dict of column_name -> new_value."""
+    ws = get_pm_tracker_sheet()
+    if ws is None:
+        return False
+    try:
+        headers = ws.row_values(1)
+        sheet_row = row_index + 2  # +1 for header, +1 for 1-based
+        for col_name, value in updates.items():
+            if col_name in headers:
+                col_idx = headers.index(col_name) + 1  # 1-based
+                ws.update_cell(sheet_row, col_idx, value)
+        return True
+    except Exception:
+        return False
+
 
 # ═══════════════════════════════════════════════════════════
 # HUBSPOT PM PIPELINE (dedicated pipeline, separate from sales)
@@ -2673,7 +2691,7 @@ with col_head_r:
 # ═══════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════
-tab_leads, tab_calc, tab_history = st.tabs(["Lead Discovery", "PM Calculator", "Quote History"])
+tab_leads, tab_tracker, tab_calc, tab_history = st.tabs(["Lead Discovery", "PM Tracker", "PM Calculator", "Quote History"])
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1: LEAD DISCOVERY
@@ -3341,7 +3359,201 @@ with tab_leads:
 
 
 # ═══════════════════════════════════════════════════════════
-# TAB 2: STANDALONE PM CALCULATOR
+# TAB 2: PM TRACKER (centralized PM deal management)
+# ═══════════════════════════════════════════════════════════
+with tab_tracker:
+    st.markdown("### PM Tracker")
+    st.caption("Central hub for all PM deals. Every quote, call, and status update lives here.")
+
+    tracker_df = load_pm_tracker()
+
+    if tracker_df.empty:
+        st.info("No PM deals tracked yet. Use Lead Discovery or PM Calculator to create quotes, and they will appear here.")
+    else:
+        # Clean up numeric columns
+        for nc in ["Eng Hours at Deal", "PM Interval (hrs)", "Contract Value", "Next PM Due (hrs)"]:
+            if nc in tracker_df.columns:
+                tracker_df[nc] = pd.to_numeric(tracker_df[nc], errors="coerce").fillna(0)
+
+        # Run alert check against this tracker data
+        tracker_alerts = check_pm_alerts(tracker_df, st.session_state.get("leads_df"))
+        tracker_alerts_by_cust = {}
+        for ta in tracker_alerts:
+            key = (ta.get("customer", "").upper(), ta.get("model", "").upper())
+            tracker_alerts_by_cust[key] = ta
+
+        # Summary metrics
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            st.metric("Total PM Deals", len(tracker_df))
+        with tc2:
+            active = tracker_df[~tracker_df["Status"].str.lower().isin(["sold", "not interested", "closed", "lost"])] if "Status" in tracker_df.columns else tracker_df
+            st.metric("Active", len(active))
+        with tc3:
+            sold = tracker_df[tracker_df["Status"].str.lower() == "sold"] if "Status" in tracker_df.columns else pd.DataFrame()
+            sold_val = sold["Contract Value"].sum() if not sold.empty and "Contract Value" in sold.columns else 0
+            st.metric("Sold Value", f"${sold_val:,.0f}")
+        with tc4:
+            alert_count = len(tracker_alerts)
+            st.metric("Alerts", alert_count)
+
+        # Alert banner
+        critical = [a for a in tracker_alerts if a.get("severity") in ("critical", "high")]
+        if critical:
+            alert_lines = [f"**{a['customer']}**: {a['message']}" for a in critical[:5]]
+            st.error(f"Action needed on {len(critical)} machine{'s' if len(critical) > 1 else ''}:  \n" + "  \n".join(alert_lines))
+
+        st.divider()
+
+        # Filters
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            t_statuses = sorted(tracker_df["Status"].dropna().unique().tolist()) if "Status" in tracker_df.columns else []
+            t_status_filter = st.multiselect("Status", t_statuses, default=[s for s in t_statuses if s.lower() not in ("not interested", "closed", "lost")], key="trk_status")
+        with fc2:
+            t_branches = sorted(tracker_df["Branch"].dropna().unique().tolist()) if "Branch" in tracker_df.columns else []
+            t_branch_filter = st.multiselect("Branch", t_branches, key="trk_branch")
+        with fc3:
+            t_reps = sorted(tracker_df["Rep"].dropna().unique().tolist()) if "Rep" in tracker_df.columns else []
+            t_rep_filter = st.multiselect("Rep", t_reps, key="trk_rep")
+
+        # Apply filters
+        t_display = tracker_df.copy()
+        if t_status_filter:
+            t_display = t_display[t_display["Status"].isin(t_status_filter)]
+        if t_branch_filter:
+            t_display = t_display[t_display["Branch"].isin(t_branch_filter)]
+        if t_rep_filter:
+            t_display = t_display[t_display["Rep"].isin(t_rep_filter)]
+
+        if t_display.empty:
+            st.info("No deals match the selected filters.")
+        else:
+            st.caption(f"Showing {len(t_display)} deals")
+
+            # Render each deal as a compact card row
+            for idx, row in t_display.iterrows():
+                t_cust = str(row.get("Customer", ""))
+                t_model = str(row.get("Model", ""))
+                t_status = str(row.get("Status", ""))
+                t_make = str(row.get("Make", ""))
+                t_serial = str(row.get("Serial", ""))
+                t_branch = str(row.get("Branch", ""))
+                t_rep = str(row.get("Rep", ""))
+                t_hours = int(row.get("Eng Hours at Deal", 0))
+                t_next_pm = int(row.get("Next PM Due (hrs)", 0))
+                t_value = float(row.get("Contract Value", 0))
+                t_notes = str(row.get("Notes", ""))
+                t_last_contact = str(row.get("Last Contact Date", ""))
+                t_hs_id = str(row.get("HubSpot Deal ID", ""))
+                t_date = str(row.get("Date", ""))
+
+                # Status color
+                status_colors = {
+                    "quoted": ("#FAEEDA", "#633806"),
+                    "called": ("#E6F1FB", "#0C447C"),
+                    "in progress": ("#EEEDFE", "#3C3489"),
+                    "sold": ("#EAF3DE", "#27500A"),
+                    "not interested": ("#F1EFE8", "#444441"),
+                }
+                s_bg, s_text = status_colors.get(t_status.lower(), ("#F1EFE8", "#444441"))
+
+                # Check for alerts on this deal
+                alert_key = (t_cust.upper(), t_model.upper())
+                deal_alert = tracker_alerts_by_cust.get(alert_key)
+
+                # Alert indicator
+                alert_pill = ""
+                if deal_alert:
+                    a_type = deal_alert.get("type", "")
+                    a_msg = deal_alert.get("message", "")
+                    if a_type == "hours_overdue":
+                        alert_pill = f'<span style="background:#FCEBEB;color:#791F1F;font-size:10px;padding:2px 8px;border-radius:4px;font-weight:500;">OVERDUE</span>'
+                    elif a_type == "hours_approaching":
+                        alert_pill = f'<span style="background:#FAEEDA;color:#633806;font-size:10px;padding:2px 8px;border-radius:4px;font-weight:500;">PM DUE SOON</span>'
+                    elif a_type == "followup_overdue":
+                        days = deal_alert.get("days_since_contact", 0)
+                        alert_pill = f'<span style="background:#FBEAF0;color:#72243E;font-size:10px;padding:2px 8px;border-radius:4px;font-weight:500;">NO CONTACT {days}d</span>'
+
+                # Build card
+                card = (
+                    f'<div style="background:var(--color-background-primary, #FFF);border:0.5px solid #E5E7EB;border-radius:8px;padding:12px 16px;margin-bottom:8px;">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'
+                    f'<div style="display:flex;align-items:center;gap:10px;flex:1;min-width:200px;">'
+                    f'<span style="background:{s_bg};color:{s_text};font-size:11px;padding:3px 10px;border-radius:10px;font-weight:500;white-space:nowrap;">{t_status}</span>'
+                    f'<span style="font-size:14px;font-weight:500;">{t_cust}</span>'
+                    f'<span style="font-size:12px;color:#9CA3AF;">{t_make} {t_model}</span>'
+                    f'{alert_pill}'
+                    f'</div>'
+                    f'<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">'
+                    f'<div style="text-align:center;"><div style="font-size:10px;color:#9CA3AF;">Hours</div><div style="font-size:13px;font-weight:500;">{t_hours:,}</div></div>'
+                    f'<div style="text-align:center;"><div style="font-size:10px;color:#9CA3AF;">Next PM</div><div style="font-size:13px;font-weight:500;">{t_next_pm:,}</div></div>'
+                    f'<div style="text-align:center;"><div style="font-size:10px;color:#9CA3AF;">Value</div><div style="font-size:13px;font-weight:500;color:#C8102E;">${t_value:,.0f}</div></div>'
+                    f'<div style="text-align:center;"><div style="font-size:10px;color:#9CA3AF;">Branch</div><div style="font-size:12px;">{t_branch}</div></div>'
+                    f'</div>'
+                    f'</div>'
+                )
+                if t_notes and t_notes != "nan":
+                    card += f'<div style="font-size:11px;color:#6B7280;margin-top:6px;">Notes: {t_notes}</div>'
+                if t_last_contact and t_last_contact != "nan":
+                    card += f'<div style="font-size:11px;color:#9CA3AF;margin-top:2px;">Last contact: {t_last_contact}</div>'
+                card += '</div>'
+                st.markdown(card, unsafe_allow_html=True)
+
+                # Inline update controls
+                t_row_key = f"trk_{idx}"
+                with st.expander("Update", expanded=False):
+                    uc1, uc2, uc3 = st.columns([1, 1, 2])
+                    with uc1:
+                        new_status = st.selectbox("Status", ["Called", "Quoted", "In Progress", "Sold", "Not Interested"], index=["Called", "Quoted", "In Progress", "Sold", "Not Interested"].index(t_status) if t_status in ["Called", "Quoted", "In Progress", "Sold", "Not Interested"] else 1, key=f"{t_row_key}_st")
+                    with uc2:
+                        new_hours = st.number_input("Current Hours", min_value=0, max_value=30000, value=t_hours, step=100, key=f"{t_row_key}_hrs")
+                    with uc3:
+                        new_notes = st.text_input("Notes", value=t_notes if t_notes != "nan" else "", key=f"{t_row_key}_notes")
+
+                    if st.button("Save Update", key=f"{t_row_key}_save", type="primary"):
+                        # Calculate new next PM due based on updated hours
+                        pm_interval = int(row.get("PM Interval (hrs)", 500) or 500)
+                        new_next_pm = ((new_hours // pm_interval) + 1) * pm_interval if new_hours > 0 and pm_interval > 0 else t_next_pm
+
+                        updates = {
+                            "Status": new_status,
+                            "Eng Hours at Deal": new_hours,
+                            "Notes": new_notes,
+                            "Next PM Due (hrs)": new_next_pm,
+                            "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
+                            "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
+                        }
+                        if update_pm_tracker_row(idx, updates):
+                            # Sync to HubSpot PM pipeline
+                            hs_data = {
+                                "customer": t_cust,
+                                "model": t_model,
+                                "serial": t_serial,
+                                "status": new_status,
+                                "contract_value": t_value,
+                                "eng_hours": new_hours,
+                            }
+                            hs_id = hubspot_create_or_update_pm_deal(hs_data)
+                            st.success(f"Updated {t_cust} to {new_status}" + (" (synced to HubSpot)" if hs_id else ""))
+                            st.rerun()
+                        else:
+                            st.warning("Could not save update. Check Google Sheets connection.")
+
+        # Export
+        st.divider()
+        exp1, exp2, _ = st.columns([1, 1, 3])
+        with exp1:
+            csv = t_display.to_csv(index=False).encode("utf-8")
+            st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
+        with exp2:
+            if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
+                pushed = push_alerts_to_hubspot(tracker_alerts)
+                st.success(f"Pushed {pushed} alert{'s' if pushed != 1 else ''} to HubSpot")
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 3: PM CALCULATOR
 # ═══════════════════════════════════════════════════════════
 with tab_calc:
     st.subheader("Customer & Job Info")
@@ -3464,7 +3676,7 @@ with tab_calc:
 
 
 # ═══════════════════════════════════════════════════════════
-# TAB 3: QUOTE HISTORY
+# TAB 4: QUOTE HISTORY
 # ═══════════════════════════════════════════════════════════
 with tab_history:
     st.subheader("Quote History & Tracking")
