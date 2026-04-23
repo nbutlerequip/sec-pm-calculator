@@ -2919,26 +2919,27 @@ with tab_leads:
                             )
                         alert_html = f'<div style="margin-top:6px;">{"".join(alert_pills)}</div>'
 
-                    # Render card with all inline styles (single line to avoid markdown indentation issues)
-                    card_html = (
-                        f'<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">'
-                        f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
-                        f'<div>'
-                        f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>'
-                        f'{subtitle_html}'
-                        f'{alert_html}'
-                        f'</div>'
-                        f'<div style="text-align:right;min-width:60px;">'
-                        f'<div style="font-size:26px;font-weight:700;color:#1A1A1A;line-height:1;">{score:.0f}</div>'
-                        f'<div style="font-size:11px;font-weight:600;color:{accent};margin-top:2px;">{tier}</div>'
-                        f'</div>'
-                        f'</div>'
-                        f'{machines_html}'
-                        f'{parts_cats_html}'
-                        f'<div style="margin-top:12px;">{value_pills}</div>'
-                        f'</div>'
-                    )
-                    st.html(card_html)
+                    # Render card — build as single line to prevent markdown code-block interpretation
+                    card_parts = [
+                        f'<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">',
+                        '<div style="display:flex;justify-content:space-between;align-items:flex-start;">',
+                        '<div>',
+                        f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>',
+                        subtitle_html,
+                        alert_html,
+                        '</div>',
+                        '<div style="text-align:right;min-width:60px;">',
+                        f'<div style="font-size:26px;font-weight:700;color:#1A1A1A;line-height:1;">{score:.0f}</div>',
+                        f'<div style="font-size:11px;font-weight:600;color:{accent};margin-top:2px;">{tier}</div>',
+                        '</div>',
+                        '</div>',
+                        machines_html,
+                        parts_cats_html,
+                        f'<div style="margin-top:12px;">{value_pills}</div>',
+                        '</div>',
+                    ]
+                    card_html = "".join(card_parts)
+                    st.markdown(card_html, unsafe_allow_html=True)
 
                     cust_key = cust_name.replace(" ", "_")[:20]
 
