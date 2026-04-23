@@ -457,8 +457,9 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         if tier == "Low":
             continue
 
-        # PM value estimate
-        est_pm_value = ds_value if ds_value > 0 else (machines * 2400)
+        # Next PM value estimate
+        est_pm_value = ds_value if ds_value > 0 else 0
+        next_pm_hrs = get_next_pm_hours(top_model, max_meter) if ds_value > 0 else 0
 
         lead_cat = "Equipment Buyer (No Service)" if total_ps == 0 else "Equipment Buyer"
 
@@ -475,7 +476,8 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
             "Stop": "",
             "Parts Value": total_ps,
             "Labor Hrs": 0,
-            "Annual PM Value": est_pm_value,
+            "Next PM Value": est_pm_value,
+            "Next PM Hrs": next_pm_hrs,
             "In HubSpot": False,
             "HubSpot Deals": 0,
             "Lifecycle": "",
@@ -1165,13 +1167,6 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             tier = "Low"
 
         # Estimate annual PM value based on fleet size
-        fleet_pm_estimate = {
-            "1-3": 4800, "4-10": 16800, "11-25": 43200,
-            "26+": 62400, "26-50": 62400, "51-100": 96000,
-            "101-250": 144000, "251-500": 240000,
-        }
-        est_pm_value = fleet_pm_estimate.get(fleet, 3600)
-
         rows.append({
             "Customer": hs_name.title(),
             "Lead Score": score,
@@ -1185,7 +1180,8 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             "Stop": "",
             "Parts Value": ytd_parts,
             "Labor Hrs": ytd_service / 150 if ytd_service > 0 else 0,  # rough estimate
-            "Annual PM Value": est_pm_value,
+            "Next PM Value": 0,
+            "Next PM Hrs": 0,
             "In HubSpot": True,
             "HubSpot Deals": deals_won,
             "Lifecycle": lifecycle,
@@ -1235,26 +1231,75 @@ def parse_procare_stops(file):
     machines["VIN"] = machines["VinHrs"].apply(lambda x: str(x).split(" - ")[0].strip())
     return set(machines["VIN"].unique())
 
-MACHINE_LIFECYCLE_HRS = 10000  # Typical heavy equipment lifecycle
-
 def get_dealsheet_pm_value(alert_model, eng_hours):
-    """Calculate remaining PM opportunity for a machine.
-    Returns the cost of PM services from current hours to end of lifecycle (10,000 hrs).
-    This tells reps how much PM revenue is still on the table."""
+    """Calculate the next PM service cost for a machine based on current hours.
+    Returns (next_pm_cost, ds_key) where next_pm_cost is what the next service costs."""
     ds_key = match_model_to_dealsheet(alert_model)
     if not ds_key:
         return 0.0, None
-    hrs = max(int(eng_hours or 0), 100)
-    # PM cost for full lifecycle
-    full_result = calculate_pm_cost(ds_key, MACHINE_LIFECYCLE_HRS)
-    # PM cost already passed (services that would have happened before current hours)
-    past_result = calculate_pm_cost(ds_key, hrs)
-    if full_result and past_result:
-        remaining = max(0, float(full_result["total_cost"]) - float(past_result["total_cost"]))
-        return remaining, ds_key
-    elif full_result:
-        return float(full_result["total_cost"]), ds_key
-    return 0.0, None
+    ds = PM_DEALSHEET.get(ds_key)
+    if not ds:
+        return 0.0, ds_key
+    hrs = max(int(eng_hours or 0), 0)
+
+    # Build list of all service intervals and their costs
+    # Find the next upcoming service milestone after current hours
+    candidates = []
+    # Check each interval type
+    if ds["hr_i"] and ds["cost_i"] and hrs < ds["hr_i"]:
+        candidates.append((ds["hr_i"], ds["cost_i"]))
+    if ds["hr_1"] and ds["cost_1"]:
+        # Next interval 1 hit: first multiple of hr_1 above current hours
+        next_hr1 = ((hrs // ds["hr_1"]) + 1) * ds["hr_1"]
+        # Only if it doesn't coincide with interval 2 (interval 2 overrides)
+        if ds["hr_2"] and next_hr1 % ds["hr_2"] != 0:
+            candidates.append((next_hr1, ds["cost_1"]))
+    if ds["hr_2"] and ds["cost_2"]:
+        next_hr2 = ((hrs // ds["hr_2"]) + 1) * ds["hr_2"]
+        # Only if it doesn't coincide with interval 3
+        if ds["hr_3"] and next_hr2 % ds["hr_3"] != 0:
+            candidates.append((next_hr2, ds["cost_2"]))
+        elif not ds["hr_3"]:
+            candidates.append((next_hr2, ds["cost_2"]))
+    if ds["hr_3"] and ds["cost_3"]:
+        next_hr3 = ((hrs // ds["hr_3"]) + 1) * ds["hr_3"]
+        candidates.append((next_hr3, ds["cost_3"]))
+    if ds["hr_s"] and ds["cost_s"]:
+        next_hrs = ((hrs // ds["hr_s"]) + 1) * ds["hr_s"]
+        candidates.append((next_hrs, ds["cost_s"]))
+
+    if not candidates:
+        return 0.0, ds_key
+
+    # The soonest upcoming service is the next PM
+    candidates.sort(key=lambda x: x[0])
+    next_pm_hrs, next_pm_cost = candidates[0]
+
+    # If multiple services hit at the same hour mark, sum them
+    total_at_next = sum(cost for h, cost in candidates if h == next_pm_hrs)
+
+    return total_at_next, ds_key
+
+
+def get_next_pm_hours(alert_model, eng_hours):
+    """Return the next PM service hour milestone for display."""
+    ds_key = match_model_to_dealsheet(alert_model)
+    if not ds_key:
+        return 0
+    ds = PM_DEALSHEET.get(ds_key)
+    if not ds:
+        return 0
+    hrs = max(int(eng_hours or 0), 0)
+
+    milestones = []
+    if ds["hr_i"] and hrs < ds["hr_i"]:
+        milestones.append(ds["hr_i"])
+    for interval_key in ["hr_1", "hr_2", "hr_3", "hr_s"]:
+        interval = ds[interval_key]
+        if interval:
+            next_hit = ((hrs // interval) + 1) * interval
+            milestones.append(next_hit)
+    return min(milestones) if milestones else 0
 
 def parse_procare_detailed(file):
     """Parse ProCare data with hours info for expiration detection."""
@@ -1336,7 +1381,8 @@ def build_procare_expiring_leads(procare_detail_df):
             "Stop": "",
             "Parts Value": 0,
             "Labor Hrs": 0,
-            "Annual PM Value": ds_value if ds_value > 0 else 4800,
+            "Next PM Value": ds_value if ds_value > 0 else 0,
+            "Next PM Hrs": get_next_pm_hours(model, hrs) if ds_value > 0 else 0,
             "In HubSpot": False,
             "HubSpot Deals": 0,
             "Lifecycle": "",
@@ -1386,10 +1432,11 @@ def score_leads(alerts_df, procare_vins):
     if df.empty:
         return df
 
-    # Match models to dealsheet and calculate real PM values
+    # Match models to dealsheet and calculate next PM service value
     ds_results = df.apply(lambda r: get_dealsheet_pm_value(r["Model"], r["Eng Hrs"]), axis=1)
-    df["Annual PM Value"] = ds_results.apply(lambda x: x[0])
+    df["Next PM Value"] = ds_results.apply(lambda x: x[0])
     df["Dealsheet Model"] = ds_results.apply(lambda x: x[1])
+    df["Next PM Hrs"] = df.apply(lambda r: get_next_pm_hours(r["Model"], r["Eng Hrs"]), axis=1)
 
     # Filter to only machines that match the dealsheet (4 target brands)
     df = df[df["Dealsheet Model"].notna()].copy()
@@ -1437,7 +1484,7 @@ def score_leads(alerts_df, procare_vins):
         elif v > 0:
             return 4
         return 0
-    df["value_pts"] = df["Annual PM Value"].apply(value_pts)
+    df["value_pts"] = df["Next PM Value"].apply(value_pts)
 
     # Parts spend: absolute dollar tiers (up to 15 pts)
     def parts_pts(p):
@@ -1511,7 +1558,7 @@ def aggregate_customer_leads(scored_df):
         "avg_hours": ("Eng Hrs", "mean"),
         "avg_score": ("Lead Score", "mean"),
         "max_score": ("Lead Score", "max"),
-        "total_annual_pm": ("Annual PM Value", "sum"),
+        "total_annual_pm": ("Next PM Value", "max"),
         "location": ("Location", "first"),
         "models": ("Model", lambda x: ", ".join(sorted(set(m for m in x if m))) if any(m for m in x) else ""),
         "dealsheet_models": ("Dealsheet Model", lambda x: ", ".join(sorted(set(str(m) for m in x if m and str(m) != "None"))) if any(m for m in x) else ""),
@@ -1541,6 +1588,8 @@ def aggregate_customer_leads(scored_df):
         agg_dict["total_spend"] = ("Total Spend", "first")
     if "Parts Categories" in scored_df.columns:
         agg_dict["Parts Categories"] = ("Parts Categories", "first")
+    if "Next PM Hrs" in scored_df.columns:
+        agg_dict["next_pm_hrs"] = ("Next PM Hrs", "min")  # Soonest upcoming PM
 
     agg = scored_df.groupby("Customer").agg(**agg_dict).reset_index()
 
@@ -2863,6 +2912,7 @@ with tab_leads:
                     # Values for card
                     parts_opp = float(row.get("total_parts_value", 0) or 0)
                     pm_value = float(row.get("total_annual_pm", 0) or 0)
+                    next_pm_hr = int(row.get("next_pm_hrs", 0) or 0)
                     score = row["Customer Score"]
                     loc = row.get("location", "") or ""
                     cat_label = row.get("lead_category", "") or ""
@@ -2897,7 +2947,8 @@ with tab_leads:
                     # Value pills
                     value_pills = ""
                     if pm_value > 0:
-                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">PM Opportunity</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
+                        pm_label = f"Next PM @ {next_pm_hr:,} hrs" if next_pm_hr > 0 else "Next PM"
+                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">{pm_label}</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
                     if parts_opp > 0:
                         value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
 
@@ -3112,7 +3163,7 @@ with tab_leads:
             st.caption(f"Showing {len(display)} leads")
             show_cols = ["Lead Score", "Tier", "Source", "Customer", "Lead Category", "CASE Class", "Fleet", "Location"]
             # Add CASE-specific columns
-            show_cols += ["Model", "Dealsheet Model", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Annual PM Value"]
+            show_cols += ["Model", "Dealsheet Model", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Next PM Value"]
             # Add spend columns if present
             if "Total Spend" in display.columns:
                 show_cols.insert(show_cols.index("Parts Value"), "Total Spend")
@@ -3125,7 +3176,7 @@ with tab_leads:
                     "Lead Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
                     "Parts Value": st.column_config.NumberColumn("Parts $", format="$%.0f"),
                     "Total Spend": st.column_config.NumberColumn("YTD Spend", format="$%.0f"),
-                    "Annual PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
+                    "Next PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
                     "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
                     "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
                     "Has PM": st.column_config.CheckboxColumn("Has PM", default=False),
@@ -3169,7 +3220,7 @@ with tab_leads:
                 }
                 lc_data = display.groupby("Lead Category").agg(
                     customers=("Customer", "nunique"),
-                    pm_value=("Annual PM Value", "sum"),
+                    pm_value=("Next PM Value", "sum"),
                 ).reset_index().sort_values("pm_value", ascending=True)
                 fig = px.bar(lc_data, x="pm_value", y="Lead Category",
                              orientation="h", title="PM Opportunity by Lead Category",
@@ -3185,7 +3236,7 @@ with tab_leads:
                 with col1:
                     src_data = display.groupby("Source").agg(
                         customers=("Customer", "nunique"),
-                        pm_value=("Annual PM Value", "sum"),
+                        pm_value=("Next PM Value", "sum"),
                     ).reset_index()
                     fig = px.bar(src_data, x="Source", y="customers",
                                  title="Leads by Source",
@@ -3209,7 +3260,7 @@ with tab_leads:
                 if not loc_filtered.empty:
                     loc_data = loc_filtered.groupby("Location").agg(
                         customers=("Customer", "nunique"),
-                        pm_value=("Annual PM Value", "sum"),
+                        pm_value=("Next PM Value", "sum"),
                     ).reset_index()
                     fig = px.bar(loc_data.sort_values("pm_value", ascending=True), x="pm_value", y="Location",
                                  orientation="h", title="PM Opportunity by Location",
@@ -3223,7 +3274,7 @@ with tab_leads:
                 if not ds_filtered.empty:
                     ds_data = ds_filtered.groupby("Dealsheet Model").agg(
                         customers=("Customer", "nunique"),
-                        pm_value=("Annual PM Value", "sum"),
+                        pm_value=("Next PM Value", "sum"),
                     ).reset_index().sort_values("pm_value", ascending=True).tail(15)
                     fig = px.bar(ds_data, x="pm_value", y="Dealsheet Model",
                                  orientation="h", title="PM Opportunity by Model",
