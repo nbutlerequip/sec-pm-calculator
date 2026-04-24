@@ -205,9 +205,31 @@ def get_gsheet_connection():
     except Exception:
         return None
 
-def save_quote_to_sheet(quote_data):
+QUOTE_HEADERS = [
+    "date", "customer_name", "branch", "rep", "service_type",
+    "make", "model", "serial", "hours_requested", "travel_time",
+    "travel_cost", "total_cost", "annual_pm_price", "notes",
+]
+
+def get_quotes_worksheet():
+    """Get or create the Quotes worksheet for quote history."""
     sheet = get_gsheet_connection()
     if sheet is None:
+        return None
+    try:
+        ws_list = sheet.spreadsheet.worksheets()
+        for ws in ws_list:
+            if ws.title == "Quotes":
+                return ws
+        quotes_ws = sheet.spreadsheet.add_worksheet(title="Quotes", rows=5000, cols=len(QUOTE_HEADERS))
+        quotes_ws.append_row(QUOTE_HEADERS, value_input_option="USER_ENTERED")
+        return quotes_ws
+    except Exception:
+        return None
+
+def save_quote_to_sheet(quote_data):
+    ws = get_quotes_worksheet()
+    if ws is None:
         st.session_state.quotes.append(quote_data)
         return False
     try:
@@ -220,7 +242,7 @@ def save_quote_to_sheet(quote_data):
             quote_data.get("travel_cost", 0), quote_data.get("total_cost", 0),
             quote_data.get("annual_pm_price", 0), quote_data.get("notes", ""),
         ]
-        sheet.append_row(row, value_input_option="USER_ENTERED")
+        ws.append_row(row, value_input_option="USER_ENTERED")
         st.session_state.quotes.append(quote_data)
         return True
     except Exception:
@@ -228,11 +250,11 @@ def save_quote_to_sheet(quote_data):
         return False
 
 def load_quotes_from_sheet():
-    sheet = get_gsheet_connection()
-    if sheet is None:
+    ws = get_quotes_worksheet()
+    if ws is None:
         return pd.DataFrame(st.session_state.quotes) if st.session_state.quotes else pd.DataFrame()
     try:
-        data = sheet.get_all_records()
+        data = ws.get_all_records()
         return pd.DataFrame(data) if data else pd.DataFrame()
     except Exception:
         return pd.DataFrame(st.session_state.quotes) if st.session_state.quotes else pd.DataFrame()
