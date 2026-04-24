@@ -2985,13 +2985,34 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
 
 def push_alerts_to_hubspot(alerts):
     """Push alert flags to HubSpot deals and create tasks for notifications.
-    Creates the PM deal in HubSpot first if it doesn't exist.
-    Also creates a HubSpot task assigned to the deal owner for each alert,
-    which triggers native HubSpot notifications (email + in-app)."""
+    Returns (pushed_count, error_messages_list)."""
+    errors = []
     if not HUBSPOT_TOKEN:
-        return 0
+        return 0, ["No HubSpot token configured"]
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     pushed = 0
+
+    # First, get the HubSpot owner ID for nbutler to use as fallback
+    fallback_owner_id = None
+    try:
+        owners_resp = requests.get(
+            "https://api.hubapi.com/crm/v3/owners",
+            headers=headers, params={"limit": 100}, timeout=10
+        )
+        if owners_resp.status_code == 200:
+            for owner in owners_resp.json().get("results", []):
+                email = (owner.get("email") or "").lower()
+                if "nbutler" in email or "nick" in email.split("@")[0]:
+                    fallback_owner_id = owner["id"]
+                    break
+            # If not found by name, just use the first active owner
+            if not fallback_owner_id:
+                results = owners_resp.json().get("results", [])
+                if results:
+                    fallback_owner_id = results[0]["id"]
+    except Exception as e:
+        errors.append(f"Owner lookup: {e}")
+
     for alert in alerts:
         deal_id = alert.get("hs_deal_id", "")
         # Clean up deal_id
@@ -3010,13 +3031,14 @@ def push_alerts_to_hubspot(alerts):
                 "contract_value": 0,
             }
             deal_id = hubspot_create_or_update_pm_deal(deal_data)
+            if not deal_id:
+                errors.append(f"Could not create deal for {alert.get('customer', '?')}")
 
         if deal_id:
             # Update deal properties with alert info
             hubspot_update_pm_alert(str(deal_id), alert["type"], alert["message"])
 
-            # Create a HubSpot task associated with the deal
-            # Tasks send native notifications to the assigned owner
+            # Create a HubSpot task
             try:
                 alert_type_label = {
                     "hours_overdue": "OVERDUE",
@@ -3041,6 +3063,10 @@ def push_alerts_to_hubspot(alerts):
                         owner_id = deal_resp.json().get("properties", {}).get("hubspot_owner_id")
                 except Exception:
                     pass
+
+                # Use fallback owner if deal has no owner
+                if not owner_id:
+                    owner_id = fallback_owner_id
 
                 # Due date = tomorrow at 9am
                 due_ts = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -3071,7 +3097,9 @@ def push_alerts_to_hubspot(alerts):
                 if resp.status_code in (200, 201):
                     pushed += 1
                 else:
-                    # Association type 216 may not work — retry without association
+                    err_detail = resp.text[:200] if resp.text else f"Status {resp.status_code}"
+                    errors.append(f"Task create (with assoc) failed: {err_detail}")
+                    # Retry without association
                     task_payload_simple = {"properties": task_props}
                     resp2 = requests.post(
                         "https://api.hubapi.com/crm/v3/objects/tasks",
@@ -3079,11 +3107,13 @@ def push_alerts_to_hubspot(alerts):
                     )
                     if resp2.status_code in (200, 201):
                         pushed += 1
+                        errors.append("(Retried without association — succeeded)")
+                    else:
+                        err2 = resp2.text[:200] if resp2.text else f"Status {resp2.status_code}"
+                        errors.append(f"Task create (simple) also failed: {err2}")
             except Exception as e:
-                # Log but don't count as success
-                print(f"[push_alerts] Task creation error: {e}")
-                pass
-    return pushed
+                errors.append(f"Task exception: {e}")
+    return pushed, errors
 
 @st.cache_data(ttl=86400)
 def setup_hubspot_pm_workflow():
@@ -3937,13 +3967,15 @@ with tab_tracker:
         with exp2:
             if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                 with st.spinner("Creating HubSpot tasks and notifications..."):
-                    pushed = push_alerts_to_hubspot(tracker_alerts)
+                    pushed, push_errors = push_alerts_to_hubspot(tracker_alerts)
                 if pushed > 0:
-                    st.success(f"✅ Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — deal owners will be notified")
-                    st.session_state["_push_result"] = f"Created {pushed} task(s)"
+                    st.success(f"✅ Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — check your Tasks queue")
                 else:
-                    st.warning("⚠️ Could not push alerts. Check HubSpot API connection.")
-                    st.session_state["_push_result"] = "Failed"
+                    st.warning("⚠️ Could not push alerts. See details below.")
+                if push_errors:
+                    with st.expander("Debug Details", expanded=True):
+                        for err in push_errors:
+                            st.code(err)
         with exp3:
             if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
                 with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
