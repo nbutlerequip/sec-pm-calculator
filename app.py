@@ -3386,8 +3386,15 @@ with tab_leads:
             if cust_display.empty:
                 st.info("No customers match filters.")
             else:
-                st.caption(f"Showing {len(cust_display)} customers")
-                for _, row in cust_display.iterrows():
+                CARDS_PER_PAGE = 25
+                total_custs = len(cust_display)
+                if "cust_page_size" not in st.session_state:
+                    st.session_state.cust_page_size = CARDS_PER_PAGE
+                show_n = min(st.session_state.cust_page_size, total_custs)
+                st.caption(f"Showing {show_n} of {total_custs} customers")
+                for row_i, (_, row) in enumerate(cust_display.iterrows()):
+                    if row_i >= show_n:
+                        break
                     tier = row["Tier"]
                     cust_name = row["Customer"]
                     cust_name_safe = html_module.escape(str(cust_name))
@@ -3674,6 +3681,12 @@ with tab_leads:
                             hs_id = hubspot_create_or_update_pm_deal(pm_log)
                             if hs_id:
                                 pm_log["hs_deal_id"] = hs_id
+
+                # Load More button for customer cards
+                if show_n < total_custs:
+                    if st.button(f"Show more ({total_custs - show_n} remaining)", key="load_more_custs", use_container_width=True):
+                        st.session_state.cust_page_size = show_n + CARDS_PER_PAGE
+                        st.rerun()
 
         else:  # By Machine/Lead
             st.caption(f"Showing {len(display)} leads")
