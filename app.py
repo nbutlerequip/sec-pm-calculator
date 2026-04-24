@@ -3028,15 +3028,14 @@ def push_alerts_to_hubspot(alerts):
             task_body = alert.get("message", "Action needed on this PM deal.")
 
             # Due date = tomorrow at 9am
-            due_ts = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            due_ts = int((datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).timestamp() * 1000)
             task_props = {
                 "hs_task_subject": task_subject,
                 "hs_task_body": task_body,
                 "hs_task_status": "NOT_STARTED",
                 "hs_task_priority": "HIGH",
-                "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "hs_timestamp": str(due_ts),
                 "hs_task_type": "TODO",
-                "hs_task_due_date": due_ts,
             }
             if owner_id:
                 task_props["hubspot_owner_id"] = owner_id
