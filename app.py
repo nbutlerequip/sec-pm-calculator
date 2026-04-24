@@ -3042,8 +3042,8 @@ def push_alerts_to_hubspot(alerts):
                 except Exception:
                     pass
 
-                # Due date = tomorrow
-                due_ts = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT09:00:00.000Z")
+                # Due date = tomorrow at 9am
+                due_ts = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 task_props = {
                     "hs_task_subject": task_subject,
                     "hs_task_body": task_body,
@@ -3051,10 +3051,12 @@ def push_alerts_to_hubspot(alerts):
                     "hs_task_priority": "HIGH",
                     "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                     "hs_task_type": "TODO",
+                    "hs_task_due_date": due_ts,
                 }
                 if owner_id:
                     task_props["hubspot_owner_id"] = owner_id
 
+                # Try creating task with deal association
                 task_payload = {
                     "properties": task_props,
                     "associations": [{
@@ -3068,9 +3070,19 @@ def push_alerts_to_hubspot(alerts):
                 )
                 if resp.status_code in (200, 201):
                     pushed += 1
-            except Exception:
-                # Fall back to just counting the deal update
-                pushed += 1
+                else:
+                    # Association type 216 may not work — retry without association
+                    task_payload_simple = {"properties": task_props}
+                    resp2 = requests.post(
+                        "https://api.hubapi.com/crm/v3/objects/tasks",
+                        headers=headers, json=task_payload_simple, timeout=15
+                    )
+                    if resp2.status_code in (200, 201):
+                        pushed += 1
+            except Exception as e:
+                # Log but don't count as success
+                print(f"[push_alerts] Task creation error: {e}")
+                pass
     return pushed
 
 @st.cache_data(ttl=86400)
@@ -3927,9 +3939,11 @@ with tab_tracker:
                 with st.spinner("Creating HubSpot tasks and notifications..."):
                     pushed = push_alerts_to_hubspot(tracker_alerts)
                 if pushed > 0:
-                    st.success(f"Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — deal owners will be notified")
+                    st.success(f"✅ Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — deal owners will be notified")
+                    st.session_state["_push_result"] = f"Created {pushed} task(s)"
                 else:
-                    st.warning("Could not push alerts. Check HubSpot API connection.")
+                    st.warning("⚠️ Could not push alerts. Check HubSpot API connection.")
+                    st.session_state["_push_result"] = "Failed"
         with exp3:
             if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
                 with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
