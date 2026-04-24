@@ -549,14 +549,19 @@ HUBSPOT_TOKEN = st.secrets.get("hubspot_token", "")
 
 @st.cache_data(ttl=1800, show_spinner="Pulling HubSpot companies...")
 def fetch_hubspot_companies():
-    """Pull company records from HubSpot with rich scoring data."""
+    """Pull company records from HubSpot with rich scoring data and primary contact info."""
     if not HUBSPOT_TOKEN:
         return {}
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     companies = {}
+    # Map company_id -> company_name for contact enrichment
+    company_id_map = {}
+    # Map company_id -> first associated contact_id
+    company_contact_ids = {}
     url = "https://api.hubapi.com/crm/v3/objects/companies"
     params = {
         "limit": 100,
+        "associations": "contacts",
         "properties": ",".join([
             "name", "city", "state", "lifecyclestage", "num_associated_deals",
             "case_customer_classification", "case_ucc_prospect_classification",
@@ -583,8 +588,9 @@ def fetch_hubspot_companies():
                 props = c.get("properties", {})
                 name = (props.get("name") or "").strip().upper()
                 if name:
+                    cid = c["id"]
                     companies[name] = {
-                        "hs_id": c["id"],
+                        "hs_id": cid,
                         "city": props.get("city", ""),
                         "state": props.get("state", ""),
                         "lifecycle": props.get("lifecyclestage", ""),
@@ -609,12 +615,61 @@ def fetch_hubspot_companies():
                         "email": (props.get("hs_email") or props.get("email") or ""),
                         "contact_name": (props.get("primary_contact_name") or ""),
                     }
+                    company_id_map[cid] = name
+                    # Grab first associated contact ID
+                    assocs = c.get("associations", {})
+                    contact_assoc = assocs.get("contacts", {}).get("results", [])
+                    if contact_assoc:
+                        company_contact_ids[cid] = contact_assoc[0]["id"]
             paging = data.get("paging", {}).get("next", {})
             after = paging.get("after")
             if not after:
                 break
     except Exception:
         pass
+
+    # Enrich companies with primary contact info (name, email, phone)
+    if company_contact_ids:
+        all_contact_ids = list(set(company_contact_ids.values()))
+        # Batch fetch contacts (100 at a time)
+        for batch_start in range(0, len(all_contact_ids), 100):
+            batch_ids = all_contact_ids[batch_start:batch_start + 100]
+            try:
+                batch_resp = requests.post(
+                    "https://api.hubapi.com/crm/v3/objects/contacts/batch/read",
+                    headers=headers,
+                    json={
+                        "properties": ["firstname", "lastname", "email", "phone", "jobtitle"],
+                        "inputs": [{"id": cid} for cid in batch_ids],
+                    },
+                    timeout=20,
+                )
+                if batch_resp.status_code == 200:
+                    contacts_by_id = {}
+                    for ct in batch_resp.json().get("results", []):
+                        ct_props = ct.get("properties", {})
+                        contacts_by_id[ct["id"]] = {
+                            "name": " ".join(filter(None, [ct_props.get("firstname", ""), ct_props.get("lastname", "")])),
+                            "email": ct_props.get("email", "") or "",
+                            "phone": ct_props.get("phone", "") or "",
+                            "title": ct_props.get("jobtitle", "") or "",
+                        }
+                    # Merge contact info into companies
+                    for comp_id, contact_id in company_contact_ids.items():
+                        comp_name = company_id_map.get(comp_id)
+                        if comp_name and comp_name in companies and contact_id in contacts_by_id:
+                            ct = contacts_by_id[contact_id]
+                            comp = companies[comp_name]
+                            # Only fill in if company-level field is empty
+                            if not comp["contact_name"] and ct["name"]:
+                                comp["contact_name"] = ct["name"]
+                            if not comp["email"] and ct["email"]:
+                                comp["email"] = ct["email"]
+                            if not comp["phone"] and ct["phone"]:
+                                comp["phone"] = ct["phone"]
+            except Exception:
+                pass
+
     return companies
 
 @st.cache_data(ttl=1800, show_spinner="Pulling HubSpot deal history...")
