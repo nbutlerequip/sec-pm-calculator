@@ -3116,104 +3116,63 @@ tab_leads, tab_tracker, tab_calc, tab_history = st.tabs(["Lead Discovery", "PM T
 # TAB 1: LEAD DISCOVERY
 # ═══════════════════════════════════════════════════════════
 with tab_leads:
-    st.subheader("PM Lead Discovery")
-    st.caption("Scores customers with Case, Kobelco, Develon, and Bomag machines from CASE alerts, HubSpot CRM, equipment sales history, and ProCare expiring contracts. Customers marked 'Not Interested' are penalized.")
+    st.subheader("Customer Discovery")
+    st.caption("Find and research customers for PM contracts. Filter by segment, search by name, and take action directly.")
 
-    # Auto-load bundled data
+    # ── Load all data sources ──
     alerts_df = load_bundled_alerts()
     procare_vins = load_bundled_procare()
 
-    # Score CASE alert leads
+    # Score CASE alert leads (keeps existing scoring for data enrichment)
     scored = pd.DataFrame()
     if alerts_df is not None and not alerts_df.empty:
         scored = score_leads(alerts_df, procare_vins)
 
-    # HubSpot enrichment + filtered HubSpot-only leads (4 dealsheet brands only)
+    # HubSpot data
     hs_companies = fetch_hubspot_companies()
     deal_history, pm_active = {}, set()
     hs_only_leads = pd.DataFrame()
 
     if hs_companies:
         deal_history, pm_active = fetch_hubspot_deals()
-
-        # Enrich CASE leads with HubSpot data (adds spend, deal history, warranty info)
         if not scored.empty:
             scored = enrich_leads_with_hubspot(scored, hs_companies, deal_history, pm_active)
-
-        # Build HubSpot-only leads, filtered to 4 dealsheet brands
         existing_customers = set(scored["Customer"].str.strip().str.upper()) if not scored.empty else set()
         hs_only_leads = build_hubspot_only_leads(hs_companies, deal_history, pm_active, existing_customers)
 
-        # Filter HubSpot-only leads — broadened to include any customer with
-        # brand ties, spend history, or active engagement with SEC
+        # Only keep HubSpot customers who have done business with SEC
         if not hs_only_leads.empty:
-            brand_keywords = [
-                "kobelco", "develon", "bomag", "doosan",
-                "case ce", "case construction",
-                "cx80", "cx130", "cx160", "cx210", "cx220", "cx240", "cx250",
-                "cx300", "cx350", "cx370", "cx490", "cx500", "cx750", "cx800",
-                "dx55", "dx60", "dx140", "dx225", "dx235", "dx255", "dx300", "dx350", "dx380", "dx420", "dx490", "dx530",
-                "sv185", "sv208", "sv215", "sv250", "sv280", "sv340",
-                "580ev", "580n", "580sn", "590sn",
-                "321f", "521g", "621g", "721g", "821g", "921g",
-                "650m", "750m", "850m",
-                "tv450", "tr270", "tr310", "tr320", "tr340",
-                "sk55", "sk75", "sk140", "sk170", "sk210", "sk230", "sk260",
-                "sk300", "sk350", "sk390", "sk490", "sk500", "sk850",
-                "bw120", "bw145", "bw177", "bw190", "bw206", "bw211", "bw213",
-                "bw219", "bw226", "bw900",
-                "bf200", "bf300", "bf600", "bf700", "bf800",
-            ]
-            def _is_relevant_customer(hs_name):
-                """Check if this HubSpot customer is relevant for PM outreach.
-                Broadened: includes any company with brand ties, spend, or deal history at SEC."""
-                data = hs_companies.get(hs_name.upper(), {})
-                # CASE classification (tagged for our brands)
-                case_class = (data.get("case_class", "") or "").lower()
-                if case_class and case_class not in ("", "competitor", "competitive"):
-                    return True
-                # Prospect classification mentioning our brands
-                prospect_class = (data.get("prospect_class", "") or "").lower()
-                if prospect_class:
-                    for brand in ("case", "kobelco", "develon", "bomag", "doosan"):
-                        if brand in prospect_class:
-                            return True
-                # Won deals = bought equipment from SEC (SEC sells our 4 brands)
-                deal_info = deal_history.get(hs_name.upper(), {})
-                if deal_info.get("won", 0) > 0:
-                    return True
-                # Any YTD spend at SEC = active customer worth including
+            def _has_sec_relationship(hs_name):
+                data = hs_companies.get(str(hs_name).strip().upper(), {})
                 ytd_parts = float(data.get("ytd_parts", 0) or 0)
                 ytd_service = float(data.get("ytd_service", 0) or 0)
                 if ytd_parts + ytd_service > 0:
                     return True
-                # Fleet size set = they own equipment
-                fleet = data.get("fleet_size", "")
-                if fleet and fleet not in ("", "0 - Rent Only"):
+                deal_info = deal_history.get(str(hs_name).strip().upper(), {})
+                if deal_info.get("won", 0) > 0:
                     return True
-                # Account stage indicates active relationship
-                account_stage = (data.get("account_stage", "") or "").lower()
-                if account_stage and account_stage not in ("", "unknown"):
+                ps_eng = (data.get("ps_engagement", "") or "").lower()
+                if ps_eng and "no purchase" not in ps_eng:
                     return True
-                # Brand/model keywords in deal names or description
-                deal_names = (deal_info.get("deal_names", "") or "").lower()
-                desc = (data.get("description", "") or "").lower()
-                combined_text = f"{deal_names} {desc}"
-                for kw in brand_keywords:
-                    if kw in combined_text:
-                        return True
+                last_svc = data.get("last_service", "")
+                if last_svc and last_svc not in ("", "No Purchase"):
+                    return True
+                last_pts = data.get("last_parts", "")
+                if last_pts and last_pts not in ("", "No Purchase"):
+                    return True
+                case_class = (data.get("case_class", "") or "")
+                if case_class and case_class.lower() not in ("", "competitor", "competitive"):
+                    return True
                 return False
-
-            mask = hs_only_leads["Customer"].apply(lambda c: _is_relevant_customer(str(c).strip()))
+            mask = hs_only_leads["Customer"].apply(lambda c: _has_sec_relationship(str(c).strip()))
             hs_only_leads = hs_only_leads[mask].copy()
 
-    # Load equipment report leads (customers who bought our 4 brands but aren't in alerts/HubSpot)
+    # Equipment report leads
     equip_df = load_equipment_report()
     equip_leads = pd.DataFrame()
     equip_branch_map = {}
     if not equip_df.empty:
         equip_branch_map = load_equip_branch_map()
-        # Build set of customers already covered by CASE alerts and HubSpot
         existing_equip = set()
         if not scored.empty:
             existing_equip.update(scored["Customer"].str.strip().str.upper())
@@ -3221,26 +3180,19 @@ with tab_leads:
             existing_equip.update(hs_only_leads["Customer"].str.strip().str.upper())
         equip_leads = build_equipment_report_leads(equip_df, existing_equip, equip_branch_map)
 
-    # Build ProCare expiring leads (machines at 2500+ hrs approaching contract end)
+    # ProCare expiring leads
     procare_expiring = pd.DataFrame()
     procare_files = sorted(DATA_DIR.glob("procare.xlsx")) or sorted(DATA_DIR.glob("Southeastern ProCare Stops*.xlsx"))
     if procare_files:
         procare_detail = parse_procare_detailed(procare_files[-1])
         if not procare_detail.empty:
             procare_expiring = build_procare_expiring_leads(procare_detail)
-            # ProCare data doesn't include customer names, only branch city + VIN + model.
-            # Use "ProCare - {Model} ({City})" as the customer label so reps can identify
-            # and look up the actual owner at their branch.
             if not procare_expiring.empty:
                 procare_expiring["Customer"] = procare_expiring.apply(
                     lambda r: f"ProCare Machine - {r.get('Model', 'Unknown')} ({r.get('Location', 'Unknown')})"
-                    if not r.get("Customer") else r["Customer"],
-                    axis=1
-                )
-                # Drop any with truly empty customer
-                procare_expiring = procare_expiring[procare_expiring["Customer"].str.len() > 0].copy()
+                    if not r.get("Customer") else r["Customer"], axis=1)
 
-    # Merge all sources
+    # Combine all sources
     sources = []
     if not scored.empty:
         if "Source" not in scored.columns:
@@ -3254,7 +3206,6 @@ with tab_leads:
         sources.append(procare_expiring)
 
     if sources:
-        # Align columns across all sources
         all_cols = set()
         for s in sources:
             all_cols.update(s.columns)
@@ -3266,53 +3217,38 @@ with tab_leads:
     else:
         all_leads = pd.DataFrame()
 
-    # Apply "Not Interested" penalty from tracking data
+    # Add segment tags for filtering
     if not all_leads.empty:
-        not_interested = load_not_interested_customers()
-        if not_interested:
-            ni_mask = all_leads["Customer"].str.strip().str.upper().isin(not_interested)
-            all_leads.loc[ni_mask, "Lead Score"] = (
-                all_leads.loc[ni_mask, "Lead Score"] - 25
-            ).clip(lower=0)
-            # Recalculate tiers after penalty
-            for idx in all_leads[ni_mask].index:
-                s = all_leads.at[idx, "Lead Score"]
-                if s >= 65:
-                    all_leads.at[idx, "Tier"] = "Top"
-                elif s >= 50:
-                    all_leads.at[idx, "Tier"] = "High"
-                elif s >= 35:
-                    all_leads.at[idx, "Tier"] = "Medium"
-                else:
-                    all_leads.at[idx, "Tier"] = "Low"
-            all_leads.loc[ni_mask, "Lead Category"] = (
-                all_leads.loc[ni_mask, "Lead Category"].astype(str) + " (Not Interested)"
-            )
-
-    # Tag leads with part categories they buy
-    if not all_leads.empty:
-        part_cats = load_part_categories()
-        if part_cats:
-            all_leads["Parts Categories"] = all_leads["Customer"].apply(
-                lambda c: ", ".join(part_cats.get(str(c).strip().upper(), []))
-            )
+        # No ProCare / No PM: customers without active PM coverage
+        if "Has PM" in all_leads.columns:
+            all_leads["Segment_NoPM"] = ~all_leads["Has PM"].fillna(False)
         else:
-            all_leads["Parts Categories"] = ""
+            all_leads["Segment_NoPM"] = True
+
+        # Parts & Service Buyers: customers with spend at SEC
+        has_parts = pd.to_numeric(all_leads.get("YTD Parts", 0), errors="coerce").fillna(0) > 0
+        has_service = pd.to_numeric(all_leads.get("YTD Service", 0), errors="coerce").fillna(0) > 0
+        has_spend = pd.to_numeric(all_leads.get("Total Spend", 0), errors="coerce").fillna(0) > 0
+        all_leads["Segment_PartsService"] = has_parts | has_service | has_spend
+
+        # Warranty Expiring/Expired
+        warranty_col = all_leads.get("Warranty", pd.Series(dtype=str)).fillna("").astype(str).str.lower()
+        all_leads["Segment_WarrantyExp"] = warranty_col.isin(["expiring", "expired"])
+
+        # Also check Lead Category for warranty mentions
+        lc = all_leads.get("Lead Category", pd.Series(dtype=str)).fillna("").astype(str).str.lower()
+        all_leads["Segment_WarrantyExp"] = all_leads["Segment_WarrantyExp"] | lc.str.contains("warranty", na=False)
 
     st.session_state.leads_df = all_leads
     st.session_state.procare_vins = procare_vins
 
-    # Load last contacted dates from tracking data
+    # Load tracking data
     last_contacted = load_last_contacted()
-
-    # Load PM Tracker and check for alerts
     pm_tracker = load_pm_tracker()
     pm_alerts = []
     if not pm_tracker.empty:
         fleet_for_alerts = all_leads if not all_leads.empty else None
         pm_alerts = check_pm_alerts(pm_tracker, fleet_for_alerts)
-        # Alerts are pushed to HubSpot only via the explicit button in PM Tracker tab
-        # (removed auto-push here to prevent duplicate API calls on every page load)
     pm_alerts_by_customer = {}
     for a in pm_alerts:
         cust = a.get("customer", "").upper()
@@ -3320,24 +3256,16 @@ with tab_leads:
             pm_alerts_by_customer.setdefault(cust, []).append(a)
 
     if all_leads.empty:
-        st.warning("No leads found. Check that data files are loaded or HubSpot is connected.")
+        st.warning("No customers found. Check that data files are loaded or HubSpot is connected.")
     else:
-        # Summary metrics
-        case_leads = all_leads[all_leads["Source"] == "CASE Alert"] if "Source" in all_leads.columns else all_leads
-        hs_leads = all_leads[all_leads["Source"] == "HubSpot"] if "Source" in all_leads.columns else pd.DataFrame()
-
-        n_alerts = len(pm_alerts)
-        if n_alerts > 0:
-            col1, col2, col3, col4 = st.columns(4)
-        else:
-            col1, col2, col3 = st.columns(3)
+        # ── Summary metrics ──
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Total Leads", f"{all_leads['Customer'].nunique():,}")
+            st.metric("Total Customers", f"{all_leads['Customer'].nunique():,}")
         with col2:
-            top_high = all_leads[all_leads["Tier"].isin(["Top", "High"])]["Customer"].nunique()
-            st.metric("Top + High", top_high)
+            no_pm_count = all_leads[all_leads["Segment_NoPM"] == True]["Customer"].nunique() if "Segment_NoPM" in all_leads.columns else 0
+            st.metric("No PM Coverage", f"{no_pm_count:,}")
         with col3:
-            # Only count YTD spend from HubSpot (accurate YTD), not equipment report lifetime spend
             if "YTD Parts" in all_leads.columns and "YTD Service" in all_leads.columns:
                 ytd_by_cust = all_leads.groupby("Customer").agg({"YTD Parts": "first", "YTD Service": "first"})
                 ytd_total = ytd_by_cust["YTD Parts"].fillna(0).sum() + ytd_by_cust["YTD Service"].fillna(0).sum()
@@ -3346,12 +3274,12 @@ with tab_leads:
                 total_spend = all_leads.groupby("Customer")["Total Spend"].first().sum()
                 st.metric("Known Spend (YTD)", f"${total_spend:,.0f}")
             else:
-                st.metric("Data Files", "Loaded")
-        if n_alerts > 0:
-            with col4:
-                st.metric("Active Alerts", n_alerts)
+                st.metric("Data Sources", "Loaded")
+        with col4:
+            warranty_count = all_leads[all_leads["Segment_WarrantyExp"] == True]["Customer"].nunique() if "Segment_WarrantyExp" in all_leads.columns else 0
+            st.metric("Warranty Expiring/Expired", warranty_count)
 
-        # Show alert banner if there are critical/high alerts
+        # Alert banner
         critical_alerts = [a for a in pm_alerts if a.get("severity") in ("critical", "high")]
         if critical_alerts:
             alert_msgs = [f"**{a['customer']}**: {a['message']}" for a in critical_alerts[:5]]
@@ -3359,25 +3287,19 @@ with tab_leads:
 
         st.divider()
 
-        # Tier legend
-        tier_legend = (
-            '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;">'
-            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#C8102E;border-radius:2px;margin-right:4px;"></span><b>Top</b> Multi-machine fleet, active spend, strong PM fit</div>'
-            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#F59E0B;border-radius:2px;margin-right:4px;"></span><b>High</b> Good fleet or spend, solid opportunity</div>'
-            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#3B82F6;border-radius:2px;margin-right:4px;"></span><b>Medium</b> Some signal, needs discovery</div>'
-            '<div style="font-size:12px;"><span style="display:inline-block;width:10px;height:10px;background:#9CA3AF;border-radius:2px;margin-right:4px;"></span><b>Low</b> Minimal activity, worth a call</div>'
-            '</div>'
-        )
-        st.markdown(tier_legend, unsafe_allow_html=True)
+        # ── Filters ──
+        col_seg, col_search, col_branch = st.columns([2, 2, 1])
 
-        # Filters
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
-        with col2:
-            pm_filter = st.radio("PM Status", ["No Active PM", "All", "Has Active PM"], horizontal=True) if "Has PM" in all_leads.columns else "All"
-        with col3:
-            # Branch filter — default to logged-in branch, "All Branches" shows everything
+        with col_seg:
+            segment_filter = st.multiselect(
+                "Customer Segment",
+                ["No ProCare/PM", "Parts & Service Buyers", "Warranty Expiring/Expired"],
+                default=[],
+                help="Filter by customer segment. Leave empty to show all."
+            )
+        with col_search:
+            search_text = st.text_input("Search Customer", placeholder="Type customer name...", label_visibility="visible")
+        with col_branch:
             branch_options = ["All Branches"] + BRANCH_NAMES
             logged_branch = st.session_state.get("branch_name", "All Branches")
             default_idx = branch_options.index(logged_branch) if logged_branch in branch_options else 0
@@ -3385,448 +3307,275 @@ with tab_leads:
 
         # Apply filters
         display = all_leads.copy()
-        if filter_tier:
-            display = display[display["Tier"].isin(filter_tier)]
-        if pm_filter == "No Active PM" and "Has PM" in display.columns:
-            display = display[~display["Has PM"]]
-        elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
-            display = display[display["Has PM"]]
+
+        # Segment filters (OR within segments)
+        if segment_filter:
+            seg_mask = pd.Series(False, index=display.index)
+            if "No ProCare/PM" in segment_filter and "Segment_NoPM" in display.columns:
+                seg_mask = seg_mask | display["Segment_NoPM"].fillna(False)
+            if "Parts & Service Buyers" in segment_filter and "Segment_PartsService" in display.columns:
+                seg_mask = seg_mask | display["Segment_PartsService"].fillna(False)
+            if "Warranty Expiring/Expired" in segment_filter and "Segment_WarrantyExp" in display.columns:
+                seg_mask = seg_mask | display["Segment_WarrantyExp"].fillna(False)
+            display = display[seg_mask]
+
+        # Search filter
+        if search_text.strip():
+            search_upper = search_text.strip().upper()
+            display = display[display["Customer"].str.upper().str.contains(search_upper, na=False)]
+
+        # Branch filter
         if filter_branch != "All Branches" and "Location" in display.columns:
             display = display[display["Location"].str.strip().str.lower() == filter_branch.strip().lower()]
 
-        # View toggle
-        view = st.radio("View", ["By Customer", "By Machine/Lead"], horizontal=True)
+        # ── Build customer summary table ──
+        if display.empty:
+            st.info("No customers match your filters. Try adjusting your search or segment selection.")
+        else:
+            # Aggregate to one row per customer
+            agg_dict = {
+                "Source": ("Source", "first"),
+                "Location": ("Location", "first"),
+                "Machines": ("Model", lambda x: len(set(str(m) for m in x if m and str(m).strip()))),
+                "Equipment": ("Model", lambda x: ", ".join(sorted(set(str(m) for m in x if m and str(m).strip()))[:5])),
+                "Category": ("Lead Category", "first") if "Lead Category" in display.columns else ("Source", lambda x: ""),
+            }
+            if "YTD Parts" in display.columns:
+                agg_dict["YTD_Parts"] = ("YTD Parts", "first")
+            if "YTD Service" in display.columns:
+                agg_dict["YTD_Service"] = ("YTD Service", "first")
+            if "Has PM" in display.columns:
+                agg_dict["Has_PM"] = ("Has PM", "first")
+            if "Fleet" in display.columns:
+                agg_dict["Fleet"] = ("Fleet", "first")
 
-        if view == "By Customer":
-            cust_display = aggregate_customer_leads(display)
-            if cust_display.empty:
-                st.info("No customers match filters.")
+            cust_agg = display.groupby("Customer").agg(**agg_dict).reset_index()
+
+            # Clean up numeric columns
+            if "YTD_Parts" in cust_agg.columns:
+                cust_agg["YTD_Parts"] = pd.to_numeric(cust_agg["YTD_Parts"], errors="coerce").fillna(0)
             else:
-                CARDS_PER_PAGE = 15
-                total_custs = len(cust_display)
-                if "cust_page_size" not in st.session_state:
-                    st.session_state.cust_page_size = CARDS_PER_PAGE
-                show_n = min(st.session_state.cust_page_size, total_custs)
-                st.caption(f"Showing {show_n} of {total_custs} customers")
-                for row_i, (_, row) in enumerate(cust_display.iterrows()):
-                    if row_i >= show_n:
-                        break
-                    tier = row["Tier"]
-                    cust_name = row["Customer"]
-                    cust_name_safe = html_module.escape(str(cust_name))
-                    tier_class = {"Top": "top", "High": "high", "Medium": "med"}.get(tier, "low")
-                    tier_css = {"Top": "tier-top", "High": "tier-high", "Medium": "tier-med"}.get(tier, "")
+                cust_agg["YTD_Parts"] = 0
+            if "YTD_Service" in cust_agg.columns:
+                cust_agg["YTD_Service"] = pd.to_numeric(cust_agg["YTD_Service"], errors="coerce").fillna(0)
+            else:
+                cust_agg["YTD_Service"] = 0
+            cust_agg["Total_Spend"] = cust_agg["YTD_Parts"] + cust_agg["YTD_Service"]
+            if "Has_PM" in cust_agg.columns:
+                cust_agg["PM_Status"] = cust_agg["Has_PM"].apply(lambda x: "Active" if x else "No PM")
+            else:
+                cust_agg["PM_Status"] = "No PM"
+            cust_agg = cust_agg.sort_values("Total_Spend", ascending=False)
 
-                    # Build machine list
-                    machines_str = ""
-                    cust_machines = display[display["Customer"] == cust_name]
-                    if not cust_machines.empty and "Model" in cust_machines.columns:
-                        models = sorted(set(str(m) for m in cust_machines["Model"] if m and str(m).strip()))
-                        if models:
-                            machines_str = ", ".join(models)
-                    elif "fleet" in row and row.get("fleet"):
-                        machines_str = f"Fleet: {row['fleet']}"
+            st.caption(f"Showing {len(cust_agg)} customers")
 
-                    # Values for card
-                    parts_opp = float(row.get("total_parts_value", 0) or 0)
-                    pm_value = float(row.get("total_annual_pm", 0) or 0)
-                    next_pm_hr = int(row.get("next_pm_hrs", 0) or 0)
-                    score = row["Customer Score"]
-                    loc = row.get("location", "") or ""
-                    cat_label = row.get("lead_category", "") or ""
-                    phone = str(row.get("phone", "") or "").strip()
+            # Display table
+            table_cols = ["Customer", "Location", "Category", "Machines", "Equipment", "YTD_Parts", "YTD_Service", "Total_Spend", "PM_Status", "Source"]
+            table_cols = [c for c in table_cols if c in cust_agg.columns]
 
-                    # Tier accent color
-                    accent = {"Top": "#C8102E", "High": "#F59E0B", "Medium": "#3B82F6"}.get(tier, "#9CA3AF")
-
-                    # Machines pill HTML
-                    machines_html = ""
-                    if machines_str:
-                        machine_list = [m.strip() for m in machines_str.replace("Fleet: ", "").split(",") if m.strip()]
-                        pills = "".join(
-                            f'<span style="display:inline-block;background:#F3F4F6;color:#374151;font-size:12px;padding:3px 10px;border-radius:12px;margin:2px 4px 2px 0;font-weight:500;">{m}</span>'
-                            for m in machine_list[:8]
-                        )
-                        if len(machine_list) > 8:
-                            pills += f'<span style="display:inline-block;color:#9CA3AF;font-size:12px;padding:3px 4px;">+{len(machine_list)-8} more</span>'
-                        machines_html = f'<div style="margin:10px 0 0 0;">{pills}</div>'
-
-                    # Part categories pills
-                    parts_cats_html = ""
-                    raw_cats = row.get("Parts Categories", "") or ""
-                    if raw_cats:
-                        cat_list = [c.strip() for c in raw_cats.split(",") if c.strip()]
-                        if cat_list:
-                            cat_pills = "".join(
-                                f'<span style="display:inline-block;background:#EEF2FF;color:#4338CA;font-size:11px;padding:2px 9px;border-radius:10px;margin:2px 4px 2px 0;font-weight:500;">{c}</span>'
-                                for c in cat_list
-                            )
-                            parts_cats_html = f'<div style="margin:8px 0 0 0;"><span style="font-size:10px;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px;margin-right:6px;">Parts:</span>{cat_pills}</div>'
-
-                    # Value pills
-                    value_pills = ""
-                    if pm_value > 0:
-                        pm_label = f"Next PM @ {next_pm_hr:,} hrs" if next_pm_hr > 0 else "Next PM"
-                        value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">{pm_label}</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
-                    if parts_opp > 0:
-                        value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
-
-                    # Location + category + phone subtitle
-                    subtitle_parts = []
-                    if loc:
-                        subtitle_parts.append(loc)
-                    if cat_label:
-                        subtitle_parts.append(cat_label)
-                    subtitle = " · ".join(subtitle_parts)
-                    phone_html = f' <span style="margin-left:8px;color:#2563EB;font-size:12px;">📞 {phone}</span>' if phone else ""
-                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}{phone_html}</div>' if (subtitle or phone) else ""
-
-                    # Last contacted info
-                    last_contact_html = ""
-                    lc = last_contacted.get(cust_name.strip().upper())
-                    if lc:
-                        lc_date = lc.get("date", "")[:10]
-                        lc_status = lc.get("status", "")
-                        lc_color = {"Called": "#3B82F6", "Quoted": "#F59E0B", "Sold": "#10B981", "In Progress": "#8B5CF6", "Not Interested": "#9CA3AF"}.get(lc_status, "#6B7280")
-                        last_contact_html = (
-                            f'<div style="margin-top:4px;">'
-                            f'<span style="font-size:11px;color:#9CA3AF;">Last contact:</span> '
-                            f'<span style="font-size:11px;color:{lc_color};font-weight:500;">{lc_status}</span>'
-                            f'<span style="font-size:11px;color:#9CA3AF;"> — {lc_date}</span>'
-                            f'</div>'
-                        )
-
-                    # Build alert badges if this customer has active alerts
-                    cust_alerts = pm_alerts_by_customer.get(cust_name.strip().upper(), [])
-                    alert_html = ""
-                    if cust_alerts:
-                        alert_pills = []
-                        for ca in cust_alerts[:3]:  # Show max 3 alerts
-                            if ca["type"] == "hours_overdue":
-                                a_color = "#DC2626"
-                                a_icon = "OVERDUE"
-                            elif ca["type"] == "hours_approaching":
-                                a_color = "#F59E0B"
-                                a_icon = "PM DUE SOON"
-                            else:
-                                a_color = "#6B7280"
-                                a_icon = "FOLLOW UP"
-                            a_msg = ca.get("message", "")
-                            alert_pills.append(
-                                f'<span style="display:inline-block;background:{a_color};color:white;font-size:10px;font-weight:700;'
-                                f'padding:3px 8px;border-radius:4px;margin-right:4px;" title="{a_msg}">{a_icon}</span>'
-                            )
-                        alert_html = f'<div style="margin-top:6px;">{"".join(alert_pills)}</div>'
-
-                    # Render card — build as single line to prevent markdown code-block interpretation
-                    card_parts = [
-                        f'<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">',
-                        '<div style="display:flex;justify-content:space-between;align-items:flex-start;">',
-                        '<div>',
-                        f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name_safe}</span>',
-                        subtitle_html,
-                        last_contact_html,
-                        alert_html,
-                        '</div>',
-                        '<div style="text-align:right;min-width:60px;">',
-                        f'<div style="font-size:26px;font-weight:700;color:#1A1A1A;line-height:1;">{score:.0f}</div>',
-                        f'<div style="font-size:11px;font-weight:600;color:{accent};margin-top:2px;">{tier}</div>',
-                        '</div>',
-                        '</div>',
-                        machines_html,
-                        parts_cats_html,
-                        f'<div style="margin-top:12px;">{value_pills}</div>',
-                        '</div>',
-                    ]
-                    card_html = "".join(card_parts)
-                    st.markdown(card_html, unsafe_allow_html=True)
-
-                    cust_key = cust_name.replace(" ", "_")[:20]
-
-                    # Two action buttons side by side
-                    btn_col1, btn_col2, _ = st.columns([1, 1, 3])
-                    with btn_col1:
-                        quote_open = st.toggle("Quote", key=f"qt_{cust_key}", value=False)
-                    with btn_col2:
-                        log_open = st.toggle("Log Activity", key=f"la_{cust_key}", value=False)
-
-                    # Inline PM Calculator
-                    if quote_open:
-                        with st.container():
-                            st.markdown(f'<div style="background:#FAFBFC;border:1px solid #E5E7EB;border-radius:8px;padding:16px 20px;margin:4px 0 12px 0;">', unsafe_allow_html=True)
-                            st.caption(f"PM Quote for {cust_name}")
-                            qc1, qc2 = st.columns(2)
-                            with qc1:
-                                q_service = st.selectbox("Field or Shop", SERVICE_TYPES, key=f"qs_{cust_key}")
-                            with qc2:
-                                q_travel = st.number_input("Travel (min, one way)", min_value=0, max_value=480, value=0, step=15, key=f"qtr_{cust_key}")
-                            qc1, qc2 = st.columns(2)
-                            with qc1:
-                                q_make = st.selectbox("Make", [""] + sorted(PM_BRANDS.keys()), key=f"qm_{cust_key}")
-                            with qc2:
-                                if q_make and q_make in PM_BRANDS:
-                                    q_model = st.selectbox("Model", [""] + get_models_for_brand(q_make), key=f"qmd_{cust_key}")
-                                else:
-                                    q_model = ""
-                            qc1, qc2, qc3, qc4 = st.columns(4)
-                            with qc1:
-                                q_serial = st.text_input("Serial #", key=f"qsr_{cust_key}")
-                            with qc2:
-                                q_machine_hrs = st.number_input("Machine Hours", min_value=0, max_value=30000, value=0, step=100, key=f"qmh_{cust_key}")
-                            with qc3:
-                                q_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key=f"qh_{cust_key}")
-                            with qc4:
-                                q_rep = st.text_input("Rep", value=st.session_state.get("rep_name", ""), key=f"qr_{cust_key}")
-                            q_notes = st.text_input("Notes", key=f"qn_{cust_key}", placeholder="Machine condition, special requirements...")
-
-                            can_calc = bool(q_make and q_model and q_model in PM_DEALSHEET)
-                            if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not can_calc, key=f"qcalc_{cust_key}"):
-                                result = calculate_pm_cost(q_model, q_hours)
-                                if result:
-                                    travel_cost = round((q_travel / 60) * 225 * 2, 2) if q_service == "Field" and q_travel > 0 else 0
-                                    st.session_state[f"quote_{cust_key}"] = {
-                                        "date": datetime.now().strftime("%m/%d/%Y"),
-                                        "customer_name": cust_name, "branch": st.session_state.get("branch_name", ""),
-                                        "rep": q_rep, "service_type": q_service, "make": q_make,
-                                        "model": q_model, "serial": q_serial,
-                                        "machine_hours": q_machine_hrs,
-                                        "hours_requested": q_hours,
-                                        "travel_time": q_travel if q_service == "Field" else 0,
-                                        "travel_cost": travel_cost, "notes": q_notes,
-                                        "intervals": result["intervals"],
-                                        "total_cost": result["total_cost"],
-                                        "annual_pm_price": result["total_cost"] + travel_cost,
-                                    }
-
-                            # Show results if calculated
-                            quote_key = f"quote_{cust_key}"
-                            if quote_key in st.session_state and st.session_state[quote_key]:
-                                q = st.session_state[quote_key]
-                                st.divider()
-                                if "intervals" in q and q["intervals"]:
-                                    interval_rows = []
-                                    for iv in q["intervals"]:
-                                        interval_rows.append({
-                                            "Service": iv["name"],
-                                            "Hour Interval": f"{iv['hours']:,} hr",
-                                            "Qty": iv["qty"],
-                                            "Cost (Per)": f"${iv['cost_per']:,.0f}",
-                                            "Subtotal": f"${iv['subtotal']:,.0f}",
-                                        })
-                                    st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
-                                t_cost = q.get("travel_cost", 0)
-                                if t_cost > 0:
-                                    st.markdown(f"**Travel:** ${t_cost:,.0f}")
-                                st.markdown(f"""<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;">
-                                    <div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get('hours_requested',0):,} hrs)</div>
-                                    <div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q['annual_pm_price']:,.0f}</div>
-                                </div>""", unsafe_allow_html=True)
-
-                                rc1, rc2, rc3 = st.columns(3)
-                                with rc1:
-                                    pdf_buf = generate_pdf(q)
-                                    safe = cust_name.replace(" ", "_").replace("/", "-")
-                                    date_str = datetime.now().strftime("%m-%d-%Y")
-                                    st.download_button("Download PDF", data=pdf_buf, file_name=f"SEC_PM_Quote_{safe}_{date_str}.pdf", mime="application/pdf", use_container_width=True, key=f"qpdf_{cust_key}")
-                                with rc2:
-                                    if st.button("Save Quote", use_container_width=True, type="secondary", key=f"qsave_{cust_key}"):
-                                        saved = save_quote_to_sheet(q)
-                                        if cust_name:
-                                            save_tracking_entry(cust_name, "Quoted", f"{q.get('make','')} {q.get('model','')}", q.get("annual_pm_price", 0))
-                                        # Write to PM Tracker
-                                        pm_entry = {
-                                            "customer": cust_name,
-                                            "branch": st.session_state.get("branch_name", ""),
-                                            "rep": q.get("rep", ""),
-                                            "make": q.get("make", ""),
-                                            "model": q.get("model", ""),
-                                            "serial": q.get("serial", ""),
-                                            "eng_hours": q.get("machine_hours", 0),
-                                            "contract_value": q.get("annual_pm_price", 0),
-                                            "status": "Quoted",
-                                            "notes": q.get("notes", ""),
-                                        }
-                                        save_pm_tracker_entry(pm_entry)
-                                        # Push to HubSpot
-                                        hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
-                                        if hs_deal_id:
-                                            # Update PM Tracker with HubSpot deal ID
-                                            pm_entry["hs_deal_id"] = hs_deal_id
-                                        st.success("Quote saved" if saved else "Saved locally (Sheets not connected)")
-                                with rc3:
-                                    if st.button("Clear Quote", use_container_width=True, key=f"qclr_{cust_key}"):
-                                        st.session_state[quote_key] = {}
-                                        st.rerun()
-
-                            st.markdown('</div>', unsafe_allow_html=True)
-
-                    # Log Activity
-                    if log_open:
-                        tc1, tc2, tc3 = st.columns([1, 1, 2])
-                        with tc1:
-                            track_status = st.selectbox("Status", ["Called", "Quoted", "In Progress", "Sold", "Not Interested"], key=f"ts_{cust_key}")
-                        with tc2:
-                            track_pm_val = st.number_input("PM Value ($)", min_value=0, value=int(pm_value), key=f"tv_{cust_key}")
-                        with tc3:
-                            track_notes = st.text_input("Notes", key=f"tn_{cust_key}")
-                        if st.button("Save", key=f"tb_{cust_key}", type="primary"):
-                            if save_tracking_entry(cust_name, track_status, track_notes, track_pm_val):
-                                st.success(f"Logged: {cust_name} marked as {track_status}")
-                            else:
-                                st.warning("Could not save to Google Sheets. Check connection.")
-                            # Also log to PM Tracker for deal lifecycle
-                            # Get machine info from the lead data
-                            lead_model = ""
-                            lead_make = ""
-                            cust_machines_log = display[display["Customer"] == cust_name] if not display.empty else pd.DataFrame()
-                            if not cust_machines_log.empty:
-                                lead_model = str(cust_machines_log.iloc[0].get("Dealsheet Model", "") or cust_machines_log.iloc[0].get("Model", "") or "")
-                                lead_make = str(cust_machines_log.iloc[0].get("Make", "") or "")
-                            pm_log = {
-                                "customer": cust_name,
-                                "branch": st.session_state.get("branch_name", ""),
-                                "rep": st.session_state.get("rep_name", ""),
-                                "make": lead_make,
-                                "model": lead_model,
-                                "contract_value": track_pm_val,
-                                "status": track_status,
-                                "notes": track_notes,
-                            }
-                            save_pm_tracker_entry(pm_log)
-                            # Push status update to HubSpot
-                            hs_id = hubspot_create_or_update_pm_deal(pm_log)
-                            if hs_id:
-                                pm_log["hs_deal_id"] = hs_id
-
-                # Load More button for customer cards
-                if show_n < total_custs:
-                    if st.button(f"Show more ({total_custs - show_n} remaining)", key="load_more_custs", use_container_width=True):
-                        st.session_state.cust_page_size = show_n + CARDS_PER_PAGE
-                        st.rerun()
-
-        else:  # By Machine/Lead
-            st.caption(f"Showing {len(display)} leads")
-            show_cols = ["Lead Score", "Tier", "Source", "Customer", "Lead Category", "CASE Class", "Fleet", "Location"]
-            # Add CASE-specific columns
-            show_cols += ["Model", "Dealsheet Model", "Eng Hrs", "Stop", "Parts Value", "Labor Hrs", "Next PM Value"]
-            # Add spend columns if present
-            if "Total Spend" in display.columns:
-                show_cols.insert(show_cols.index("Parts Value"), "Total Spend")
-            show_cols += ["Has PM", "VIN"]
-            show_cols = [c for c in show_cols if c in display.columns]
             st.dataframe(
-                display[show_cols].reset_index(drop=True),
-                use_container_width=True, hide_index=True,
+                cust_agg[table_cols].reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True,
+                height=450,
                 column_config={
-                    "Lead Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-                    "Parts Value": st.column_config.NumberColumn("Parts $", format="$%.0f"),
-                    "Total Spend": st.column_config.NumberColumn("YTD Spend", format="$%.0f"),
-                    "Next PM Value": st.column_config.NumberColumn("Annual PM", format="$%.0f"),
-                    "Eng Hrs": st.column_config.NumberColumn("Hours", format="%.0f"),
-                    "Labor Hrs": st.column_config.NumberColumn("Labor Hrs", format="%.1f"),
-                    "Has PM": st.column_config.CheckboxColumn("Has PM", default=False),
-                    "Lead Category": st.column_config.TextColumn("Lead Category", width="medium"),
-                    "CASE Class": st.column_config.TextColumn("CASE Class", width="small"),
-                    "Fleet": st.column_config.TextColumn("Fleet Size", width="small"),
+                    "Customer": st.column_config.TextColumn("Customer", width="medium"),
+                    "Location": st.column_config.TextColumn("Branch", width="small"),
+                    "Category": st.column_config.TextColumn("Category", width="medium"),
+                    "Machines": st.column_config.NumberColumn("# Machines", format="%d", width="small"),
+                    "Equipment": st.column_config.TextColumn("Equipment", width="large"),
+                    "YTD_Parts": st.column_config.NumberColumn("YTD Parts", format="$%.0f"),
+                    "YTD_Service": st.column_config.NumberColumn("YTD Service", format="$%.0f"),
+                    "Total_Spend": st.column_config.NumberColumn("Total Spend", format="$%.0f"),
+                    "PM_Status": st.column_config.TextColumn("PM Status", width="small"),
                     "Source": st.column_config.TextColumn("Source", width="small"),
                 },
             )
 
-            # Export leads
+            # ── Export ──
             st.divider()
             col_exp1, col_exp2, _ = st.columns([1, 1, 3])
             with col_exp1:
-                csv_data = display.to_csv(index=False).encode("utf-8")
-                st.download_button("Export Leads (CSV)", data=csv_data, file_name=f"SEC_PM_Leads_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
+                csv_data = cust_agg[table_cols].to_csv(index=False).encode("utf-8")
+                st.download_button("Export Customers (CSV)", data=csv_data,
+                    file_name=f"SEC_PM_Customers_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv", use_container_width=True)
             with col_exp2:
-                cust_csv = aggregate_customer_leads(display)
-                if not cust_csv.empty:
-                    cust_csv_data = cust_csv.to_csv(index=False).encode("utf-8")
-                    st.download_button("Export by Customer (CSV)", data=cust_csv_data, file_name=f"SEC_PM_Leads_Customers_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
+                full_csv = display.to_csv(index=False).encode("utf-8")
+                st.download_button("Export All Data (CSV)", data=full_csv,
+                    file_name=f"SEC_PM_Full_Data_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv", use_container_width=True)
 
-            # Charts
+            # ── Customer Action Panel ──
             st.divider()
-            import plotly.express as px
+            st.markdown("### Take Action")
+            cust_names = sorted(cust_agg["Customer"].tolist())
+            selected_cust = st.selectbox("Select a customer to quote or log activity", [""] + cust_names, key="action_customer")
 
-            # Lead Category breakdown
-            if "Lead Category" in display.columns:
-                cat_colors = {
-                    "Parts Only, No Service": "#C8102E",
-                    "Warranty Expiring": "#DC2626",
-                    "Warranty Expired": "#E8601C",
-                    "Active Service Customer": "#2F5496",
-                    "Full Service (Lock In)": "#1B7340",
-                    "Lapsed Service": "#F59E0B",
-                    "No ProCare (In CRM)": "#6B7280",
-                    "No ProCare (New Lead)": "#9CA3AF",
-                    "Active PM (Upsell)": "#8B5CF6",
-                    "Equipment Buyer (No Service)": "#D97706",
-                    "In CRM (Prospect)": "#94A3B8",
-                }
-                lc_data = display.groupby("Lead Category").agg(
-                    customers=("Customer", "nunique"),
-                    pm_value=("Next PM Value", "sum"),
-                ).reset_index().sort_values("pm_value", ascending=True)
-                fig = px.bar(lc_data, x="pm_value", y="Lead Category",
-                             orientation="h", title="PM Opportunity by Lead Category",
-                             labels={"pm_value": "Annual PM Value ($)", "Lead Category": ""},
-                             hover_data=["customers"],
-                             color="Lead Category", color_discrete_map=cat_colors)
-                fig.update_layout(showlegend=False, height=400)
-                st.plotly_chart(fig, use_container_width=True)
+            if selected_cust:
+                cust_key = selected_cust.replace(" ", "_")[:20]
+                cust_data = display[display["Customer"] == selected_cust]
 
-            # Source breakdown
-            if "Source" in display.columns:
-                col1, col2 = st.columns(2)
-                with col1:
-                    src_data = display.groupby("Source").agg(
-                        customers=("Customer", "nunique"),
-                        pm_value=("Next PM Value", "sum"),
-                    ).reset_index()
-                    fig = px.bar(src_data, x="Source", y="customers",
-                                 title="Leads by Source",
-                                 labels={"customers": "Unique Customers", "Source": ""},
-                                 color="Source", color_discrete_map={"CASE Alert": SEC_RED, "HubSpot": "#2F5496"})
-                    fig.update_layout(showlegend=False, height=350)
-                    st.plotly_chart(fig, use_container_width=True)
+                # Customer info card
+                cust_row = cust_agg[cust_agg["Customer"] == selected_cust]
+                if not cust_row.empty:
+                    cust_row = cust_row.iloc[0]
+                    loc = str(cust_row.get("Location", "") or "")
+                    cat_label = str(cust_row.get("Category", "") or "")
+                    equip = str(cust_row.get("Equipment", "") or "")
+                    phone = ""
+                    hs_data = hs_companies.get(selected_cust.strip().upper(), {}) if hs_companies else {}
+                    phone = str(hs_data.get("phone", "") or "")
 
-                with col2:
-                    fig = px.bar(src_data, x="Source", y="pm_value",
-                                 title="PM Opportunity by Source",
-                                 labels={"pm_value": "Annual PM Value ($)", "Source": ""},
-                                 color="Source", color_discrete_map={"CASE Alert": SEC_RED, "HubSpot": "#2F5496"})
-                    fig.update_layout(showlegend=False, height=350)
-                    st.plotly_chart(fig, use_container_width=True)
+                    info_parts = []
+                    if loc:
+                        info_parts.append(f"Branch: {loc}")
+                    if cat_label:
+                        info_parts.append(f"Category: {cat_label}")
+                    if phone:
+                        info_parts.append(f"Phone: {phone}")
+                    if equip:
+                        info_parts.append(f"Equipment: {equip}")
 
-            # Location and Category charts (filter out blanks from HubSpot leads)
-            col1, col2 = st.columns(2)
-            with col1:
-                loc_filtered = display[display["Location"].notna() & (display["Location"] != "")]
-                if not loc_filtered.empty:
-                    loc_data = loc_filtered.groupby("Location").agg(
-                        customers=("Customer", "nunique"),
-                        pm_value=("Next PM Value", "sum"),
-                    ).reset_index()
-                    fig = px.bar(loc_data.sort_values("pm_value", ascending=True), x="pm_value", y="Location",
-                                 orientation="h", title="PM Opportunity by Location",
-                                 labels={"pm_value": "Annual PM Value ($)", "Location": ""},
-                                 color_discrete_sequence=[SEC_RED])
-                    fig.update_layout(showlegend=False, height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    lc = last_contacted.get(selected_cust.strip().upper())
+                    if lc:
+                        info_parts.append(f"Last Contact: {lc.get('status', '')} on {lc.get('date', '')[:10]}")
 
-            with col2:
-                ds_filtered = display[display["Dealsheet Model"].notna() & (display["Dealsheet Model"] != "")]
-                if not ds_filtered.empty:
-                    ds_data = ds_filtered.groupby("Dealsheet Model").agg(
-                        customers=("Customer", "nunique"),
-                        pm_value=("Next PM Value", "sum"),
-                    ).reset_index().sort_values("pm_value", ascending=True).tail(15)
-                    fig = px.bar(ds_data, x="pm_value", y="Dealsheet Model",
-                                 orientation="h", title="PM Opportunity by Model",
-                                 labels={"pm_value": "Annual PM Value ($)", "Dealsheet Model": ""},
-                                 color_discrete_sequence=["#2F5496"])
-                    fig.update_layout(showlegend=False, height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    cust_alerts = pm_alerts_by_customer.get(selected_cust.strip().upper(), [])
+                    if cust_alerts:
+                        for ca in cust_alerts[:3]:
+                            info_parts.append(f"Alert: {ca.get('message', '')}")
+
+                    info_html = " &middot; ".join(info_parts[:4])
+                    if len(info_parts) > 4:
+                        info_html += "<br>" + " &middot; ".join(info_parts[4:])
+                    st.markdown(
+                        f'<div style="background:#F8F9FA;border:1px solid #E5E7EB;border-left:4px solid #C8102E;'
+                        f'border-radius:8px;padding:14px 18px;margin-bottom:12px;">'
+                        f'<div style="font-size:15px;font-weight:700;color:#1A1A1A;margin-bottom:4px;">{html_module.escape(selected_cust)}</div>'
+                        f'<div style="font-size:12px;color:#6B7280;">{info_html}</div>'
+                        f'</div>', unsafe_allow_html=True)
+
+                # Action tabs
+                act_tab1, act_tab2 = st.tabs(["Quote PM", "Log Activity"])
+
+                with act_tab1:
+                    st.caption(f"PM Quote for {selected_cust}")
+                    qc1, qc2 = st.columns(2)
+                    with qc1:
+                        q_service = st.selectbox("Field or Shop", SERVICE_TYPES, key=f"qs_{cust_key}")
+                    with qc2:
+                        q_travel = st.number_input("Travel (min, one way)", min_value=0, max_value=480, value=0, step=15, key=f"qtr_{cust_key}")
+                    qc1, qc2 = st.columns(2)
+                    with qc1:
+                        q_make = st.selectbox("Make", [""] + sorted(PM_BRANDS.keys()), key=f"qm_{cust_key}")
+                    with qc2:
+                        if q_make and q_make in PM_BRANDS:
+                            q_model = st.selectbox("Model", [""] + get_models_for_brand(q_make), key=f"qmd_{cust_key}")
+                        else:
+                            q_model = ""
+                    qc1, qc2, qc3, qc4 = st.columns(4)
+                    with qc1:
+                        q_serial = st.text_input("Serial #", key=f"qsr_{cust_key}")
+                    with qc2:
+                        q_machine_hrs = st.number_input("Machine Hours", min_value=0, max_value=30000, value=0, step=100, key=f"qmh_{cust_key}")
+                    with qc3:
+                        q_hours = st.selectbox("Hours Requested", [500, 1000, 1500, 2000, 2500, 3000, 3500], index=3, key=f"qh_{cust_key}")
+                    with qc4:
+                        q_rep = st.text_input("Rep", value=st.session_state.get("rep_name", ""), key=f"qr_{cust_key}")
+                    q_notes = st.text_input("Notes", key=f"qn_{cust_key}", placeholder="Machine condition, special requirements...")
+
+                    can_calc = bool(q_make and q_model and q_model in PM_DEALSHEET)
+                    if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not can_calc, key=f"qcalc_{cust_key}"):
+                        result = calculate_pm_cost(q_model, q_hours)
+                        if result:
+                            travel_cost = round((q_travel / 60) * 225 * 2, 2) if q_service == "Field" and q_travel > 0 else 0
+                            st.session_state[f"quote_{cust_key}"] = {
+                                "date": datetime.now().strftime("%m/%d/%Y"),
+                                "customer_name": selected_cust, "branch": st.session_state.get("branch_name", ""),
+                                "rep": q_rep, "service_type": q_service, "make": q_make,
+                                "model": q_model, "serial": q_serial,
+                                "machine_hours": q_machine_hrs, "hours_requested": q_hours,
+                                "travel_time": q_travel if q_service == "Field" else 0,
+                                "travel_cost": travel_cost, "notes": q_notes,
+                                "intervals": result["intervals"],
+                                "total_cost": result["total_cost"],
+                                "annual_pm_price": result["total_cost"] + travel_cost,
+                            }
+
+                    quote_key = f"quote_{cust_key}"
+                    if quote_key in st.session_state and st.session_state[quote_key]:
+                        q = st.session_state[quote_key]
+                        st.divider()
+                        if "intervals" in q and q["intervals"]:
+                            interval_rows = []
+                            for iv in q["intervals"]:
+                                interval_rows.append({
+                                    "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
+                                    "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
+                                    "Subtotal": f"${iv['subtotal']:,.0f}",
+                                })
+                            st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+                        t_cost = q.get("travel_cost", 0)
+                        if t_cost > 0:
+                            st.markdown(f"**Travel:** ${t_cost:,.0f}")
+                        st.markdown(f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;"><div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div><div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q["annual_pm_price"]:,.0f}</div></div>', unsafe_allow_html=True)
+
+                        rc1, rc2, rc3 = st.columns(3)
+                        with rc1:
+                            pdf_buf = generate_pdf(q)
+                            safe = selected_cust.replace(" ", "_").replace("/", "-")
+                            date_str = datetime.now().strftime("%m-%d-%Y")
+                            st.download_button("Download PDF", data=pdf_buf, file_name=f"SEC_PM_Quote_{safe}_{date_str}.pdf", mime="application/pdf", use_container_width=True, key=f"qpdf_{cust_key}")
+                        with rc2:
+                            if st.button("Save Quote", use_container_width=True, type="secondary", key=f"qsave_{cust_key}"):
+                                saved = save_quote_to_sheet(q)
+                                if selected_cust:
+                                    save_tracking_entry(selected_cust, "Quoted", f"{q.get('make','')} {q.get('model','')}", q.get("annual_pm_price", 0))
+                                pm_entry = {
+                                    "customer": selected_cust, "branch": st.session_state.get("branch_name", ""),
+                                    "rep": q.get("rep", ""), "make": q.get("make", ""), "model": q.get("model", ""),
+                                    "serial": q.get("serial", ""), "eng_hours": q.get("machine_hours", 0),
+                                    "contract_value": q.get("annual_pm_price", 0), "status": "Quoted", "notes": q.get("notes", ""),
+                                }
+                                save_pm_tracker_entry(pm_entry)
+                                hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
+                                if hs_deal_id:
+                                    pm_entry["hs_deal_id"] = hs_deal_id
+                                st.success("Quote saved" if saved else "Saved locally (Sheets not connected)")
+                        with rc3:
+                            if st.button("Clear Quote", use_container_width=True, key=f"qclr_{cust_key}"):
+                                st.session_state[quote_key] = {}
+                                st.rerun()
+
+                with act_tab2:
+                    tc1, tc2, tc3 = st.columns([1, 1, 2])
+                    with tc1:
+                        track_status = st.selectbox("Status", ["Called", "Quoted", "In Progress", "Sold", "Not Interested"], key=f"ts_{cust_key}")
+                    with tc2:
+                        track_pm_val = st.number_input("PM Value ($)", min_value=0, value=0, key=f"tv_{cust_key}")
+                    with tc3:
+                        track_notes = st.text_input("Notes", key=f"tn_{cust_key}")
+                    if st.button("Save Activity", key=f"tb_{cust_key}", type="primary"):
+                        if save_tracking_entry(selected_cust, track_status, track_notes, track_pm_val):
+                            st.success(f"Logged: {selected_cust} marked as {track_status}")
+                        else:
+                            st.warning("Could not save to Google Sheets. Check connection.")
+                        lead_model = ""
+                        lead_make = ""
+                        if not cust_data.empty:
+                            lead_model = str(cust_data.iloc[0].get("Dealsheet Model", "") or cust_data.iloc[0].get("Model", "") or "")
+                            lead_make = str(cust_data.iloc[0].get("Make", "") or "")
+                        pm_log = {
+                            "customer": selected_cust, "branch": st.session_state.get("branch_name", ""),
+                            "rep": st.session_state.get("rep_name", ""), "make": lead_make,
+                            "model": lead_model, "contract_value": track_pm_val,
+                            "status": track_status, "notes": track_notes,
+                        }
+                        save_pm_tracker_entry(pm_log)
+                        hs_id = hubspot_create_or_update_pm_deal(pm_log)
+                        if hs_id:
+                            pm_log["hs_deal_id"] = hs_id
 
 
 # ═══════════════════════════════════════════════════════════
