@@ -3915,34 +3915,40 @@ with tab_tracker:
             csv = t_display.to_csv(index=False).encode("utf-8")
             st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
         with exp2:
-            if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
-                with st.spinner("Creating HubSpot tasks and notifications..."):
-                    pushed, push_errors = push_alerts_to_hubspot(tracker_alerts)
-                st.session_state["hs_push_result"] = {"pushed": pushed, "errors": push_errors}
+            @st.fragment
+            def _push_alerts_fragment():
+                if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
+                    with st.spinner("Creating HubSpot tasks and notifications..."):
+                        pushed, push_errors = push_alerts_to_hubspot(tracker_alerts)
+                    st.session_state["hs_push_result"] = {"pushed": pushed, "errors": push_errors}
 
-            # Show results from session state so they persist across reruns
-            hs_result = st.session_state.get("hs_push_result")
-            if hs_result:
-                if hs_result["pushed"] > 0:
-                    st.success(f"✅ Created {hs_result['pushed']} task{'s' if hs_result['pushed'] != 1 else ''} in HubSpot — check your Tasks queue")
-                else:
-                    st.warning("⚠️ Could not push alerts. See details below.")
-                if hs_result.get("errors"):
-                    with st.expander("Debug Details", expanded=True):
-                        for err in hs_result["errors"]:
-                            st.code(err)
+                # Show results from session state so they persist across reruns
+                hs_result = st.session_state.get("hs_push_result")
+                if hs_result:
+                    if hs_result["pushed"] > 0:
+                        st.success(f"✅ Created {hs_result['pushed']} task{'s' if hs_result['pushed'] != 1 else ''} in HubSpot — check your Tasks queue")
+                    else:
+                        st.warning("⚠️ Could not push alerts. See details below.")
+                    if hs_result.get("errors"):
+                        with st.expander("Debug Details", expanded=True):
+                            for err in hs_result["errors"]:
+                                st.code(err)
+            _push_alerts_fragment()
         with exp3:
-            if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
-                with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
-                    success, msg = setup_hubspot_pm_workflow()
-                if success:
-                    st.success(f"HubSpot setup complete: {msg}")
-                else:
-                    st.warning(msg)
-                    st.caption("Manual setup: In HubSpot go to Automation > Workflows > Create deal-based workflow. "
-                              "Trigger: deal property 'PM Alert Active' is 'Yes'. "
-                              "Action: Send internal notification to deal owner. "
-                              "Use {{deal.pm_alert_message}} in the notification body.")
+            @st.fragment
+            def _setup_hs_fragment():
+                if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
+                    with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
+                        success, msg = setup_hubspot_pm_workflow()
+                    if success:
+                        st.success(f"HubSpot setup complete: {msg}")
+                    else:
+                        st.warning(msg)
+                        st.caption("Manual setup: In HubSpot go to Automation > Workflows > Create deal-based workflow. "
+                                  "Trigger: deal property 'PM Alert Active' is 'Yes'. "
+                                  "Action: Send internal notification to deal owner. "
+                                  "Use {{deal.pm_alert_message}} in the notification body.")
+            _setup_hs_fragment()
 
 
 # ═══════════════════════════════════════════════════════════
