@@ -577,7 +577,7 @@ def fetch_hubspot_companies():
     }
     try:
         after = None
-        for _ in range(40):  # max 4000 companies
+        for _ in range(80):  # max 8000 companies
             if after:
                 params["after"] = after
             resp = requests.get(url, headers=headers, params=params, timeout=15)
