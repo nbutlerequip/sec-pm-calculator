@@ -3305,9 +3305,8 @@ with tab_leads:
     if not pm_tracker.empty:
         fleet_for_alerts = all_leads if not all_leads.empty else None
         pm_alerts = check_pm_alerts(pm_tracker, fleet_for_alerts)
-        # Push alerts to HubSpot deals for workflow triggers
-        if pm_alerts:
-            push_alerts_to_hubspot(pm_alerts)
+        # Alerts are pushed to HubSpot only via the explicit button in PM Tracker tab
+        # (removed auto-push here to prevent duplicate API calls on every page load)
     pm_alerts_by_customer = {}
     for a in pm_alerts:
         cust = a.get("customer", "").upper()
@@ -3636,7 +3635,7 @@ with tab_leads:
                                             "make": q.get("make", ""),
                                             "model": q.get("model", ""),
                                             "serial": q.get("serial", ""),
-                                            "eng_hours": q.get("hours_requested", 0),
+                                            "eng_hours": q.get("machine_hours", 0),
                                             "contract_value": q.get("annual_pm_price", 0),
                                             "status": "Quoted",
                                             "notes": q.get("notes", ""),
@@ -3899,12 +3898,12 @@ with tab_tracker:
 
             # Render each deal as a compact card row
             for row_pos, (idx, row) in enumerate(t_display.iterrows()):
-                t_cust = str(row.get("Customer", ""))
-                t_model = str(row.get("Model", ""))
+                t_cust = html_module.escape(str(row.get("Customer", "")))
+                t_model = html_module.escape(str(row.get("Model", "")))
                 t_status = str(row.get("Status", ""))
-                t_make = str(row.get("Make", ""))
-                t_serial = str(row.get("Serial", ""))
-                t_branch = str(row.get("Branch", ""))
+                t_make = html_module.escape(str(row.get("Make", "")))
+                t_serial = html_module.escape(str(row.get("Serial", "")))
+                t_branch = html_module.escape(str(row.get("Branch", "")))
                 t_rep = str(row.get("Rep", ""))
                 t_hours = int(row.get("Eng Hours at Deal", 0))
                 t_next_pm = int(row.get("Next PM Due (hrs)", 0))
@@ -3960,7 +3959,7 @@ with tab_tracker:
                     f'</div>'
                 )
                 if t_notes and t_notes != "nan":
-                    card += f'<div style="font-size:11px;color:#6B7280;margin-top:6px;">Notes: {t_notes}</div>'
+                    card += f'<div style="font-size:11px;color:#6B7280;margin-top:6px;">Notes: {html_module.escape(t_notes)}</div>'
                 if t_last_contact and t_last_contact != "nan":
                     card += f'<div style="font-size:11px;color:#9CA3AF;margin-top:2px;">Last contact: {t_last_contact}</div>'
                 card += '</div>'
@@ -3989,7 +3988,7 @@ with tab_tracker:
                             "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
                             "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
                         }
-                        if update_pm_tracker_row(row_pos, updates):
+                        if update_pm_tracker_row(idx, updates):
                             # Sync to HubSpot PM pipeline
                             hs_data = {
                                 "customer": t_cust,
@@ -4138,7 +4137,7 @@ with tab_calc:
                     "make": calc_make,
                     "model": calc_model,
                     "serial": calc_serial,
-                    "eng_hours": calc_hours,
+                    "eng_hours": calc_machine_hrs,
                     "contract_value": q.get("annual_pm_price", 0),
                     "status": "Quoted",
                     "notes": calc_notes,
