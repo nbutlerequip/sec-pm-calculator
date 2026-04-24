@@ -3918,13 +3918,18 @@ with tab_tracker:
             if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                 with st.spinner("Creating HubSpot tasks and notifications..."):
                     pushed, push_errors = push_alerts_to_hubspot(tracker_alerts)
-                if pushed > 0:
-                    st.success(f"✅ Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — check your Tasks queue")
+                st.session_state["hs_push_result"] = {"pushed": pushed, "errors": push_errors}
+
+            # Show results from session state so they persist across reruns
+            hs_result = st.session_state.get("hs_push_result")
+            if hs_result:
+                if hs_result["pushed"] > 0:
+                    st.success(f"✅ Created {hs_result['pushed']} task{'s' if hs_result['pushed'] != 1 else ''} in HubSpot — check your Tasks queue")
                 else:
                     st.warning("⚠️ Could not push alerts. See details below.")
-                if push_errors:
+                if hs_result.get("errors"):
                     with st.expander("Debug Details", expanded=True):
-                        for err in push_errors:
+                        for err in hs_result["errors"]:
                             st.code(err)
         with exp3:
             if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
