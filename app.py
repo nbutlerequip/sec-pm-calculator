@@ -6,7 +6,7 @@ import re
 import html as html_module
 import base64
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
@@ -566,6 +566,8 @@ def fetch_hubspot_companies():
             "last_parts_purchase", "last_parts_invoice_date__c",
             "sa_ytd_charges__c", "oe_ytd_charges__c",
             "phone", "domain",
+            "account_number", "account_number__c", "case_account_number",
+            "hs_email", "email", "primary_contact_name",
         ]),
     }
     try:
@@ -603,6 +605,9 @@ def fetch_hubspot_companies():
                         "description": props.get("description", ""),
                         "phone": props.get("phone", ""),
                         "domain": props.get("domain", ""),
+                        "account_number": (props.get("account_number") or props.get("account_number__c") or props.get("case_account_number") or ""),
+                        "email": (props.get("hs_email") or props.get("email") or ""),
+                        "contact_name": (props.get("primary_contact_name") or ""),
                     }
             paging = data.get("paging", {}).get("next", {})
             after = paging.get("after")
@@ -960,13 +965,22 @@ def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_act
     df["Lead Category"] = hs_category
     df["Service Status"] = hs_service_status
 
-    # Add phone from HubSpot
+    # Add phone, account number, email, contact name from HubSpot
     phone_vals = []
+    acct_vals = []
+    email_vals = []
+    contact_vals = []
     for _, row in df.iterrows():
         cust = row["cust_upper"]
         match = _match_hubspot_company(cust, hs_companies)
         phone_vals.append(match.get("phone", "") if match else "")
+        acct_vals.append(match.get("account_number", "") if match else "")
+        email_vals.append(match.get("email", "") if match else "")
+        contact_vals.append(match.get("contact_name", "") if match else "")
     df["Phone"] = phone_vals
+    df["Account Number"] = acct_vals
+    df["Email"] = email_vals
+    df["Contact Name"] = contact_vals
 
     # Apply the composite boost
     df["HS Boost"] = hs_boost
@@ -1243,6 +1257,9 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             "has_procare": False,
             "is_internal": False,
             "Phone": data.get("phone", ""),
+            "Account Number": data.get("account_number", ""),
+            "Email": data.get("email", ""),
+            "Contact Name": data.get("contact_name", ""),
         })
 
     if not rows:
@@ -1614,7 +1631,7 @@ def aggregate_customer_leads(scored_df):
 
     agg_dict = {
         "machines": ("VIN", lambda x: x.nunique() if x.notna().any() and (x != "").any() else 0),
-        "total_parts_value": ("Parts Value", "sum"),
+        "total_parts_value": ("Parts Value", "max"),
         "total_labor_hrs": ("Labor Hrs", "sum"),
         "avg_hours": ("Eng Hrs", "mean"),
         "avg_score": ("Lead Score", "mean"),
@@ -1653,6 +1670,12 @@ def aggregate_customer_leads(scored_df):
         agg_dict["next_pm_hrs"] = ("Next PM Hrs", "min")  # Soonest upcoming PM
     if "Phone" in scored_df.columns:
         agg_dict["phone"] = ("Phone", "first")
+    if "Account Number" in scored_df.columns:
+        agg_dict["account_number"] = ("Account Number", "first")
+    if "Email" in scored_df.columns:
+        agg_dict["email"] = ("Email", "first")
+    if "Contact Name" in scored_df.columns:
+        agg_dict["contact_name"] = ("Contact Name", "first")
 
     agg = scored_df.groupby("Customer").agg(**agg_dict).reset_index()
 
@@ -2961,10 +2984,13 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
     return alerts
 
 def push_alerts_to_hubspot(alerts):
-    """Push alert flags to HubSpot deals for workflow triggers.
-    Creates the PM deal in HubSpot first if it doesn't exist."""
+    """Push alert flags to HubSpot deals and create tasks for notifications.
+    Creates the PM deal in HubSpot first if it doesn't exist.
+    Also creates a HubSpot task assigned to the deal owner for each alert,
+    which triggers native HubSpot notifications (email + in-app)."""
     if not HUBSPOT_TOKEN:
         return 0
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     pushed = 0
     for alert in alerts:
         deal_id = alert.get("hs_deal_id", "")
@@ -2986,8 +3012,64 @@ def push_alerts_to_hubspot(alerts):
             deal_id = hubspot_create_or_update_pm_deal(deal_data)
 
         if deal_id:
-            success = hubspot_update_pm_alert(str(deal_id), alert["type"], alert["message"])
-            if success:
+            # Update deal properties with alert info
+            hubspot_update_pm_alert(str(deal_id), alert["type"], alert["message"])
+
+            # Create a HubSpot task associated with the deal
+            # Tasks send native notifications to the assigned owner
+            try:
+                alert_type_label = {
+                    "hours_overdue": "OVERDUE",
+                    "hours_approaching": "PM DUE SOON",
+                    "followup_overdue": "FOLLOW-UP NEEDED",
+                }.get(alert["type"], "PM ALERT")
+                customer = alert.get("customer", "Unknown")
+                model = alert.get("model", "")
+                task_subject = f"PM Alert: {alert_type_label} - {customer} {model}".strip()
+                task_body = alert.get("message", "Action needed on this PM deal.")
+
+                # Get deal owner to assign the task
+                owner_id = None
+                try:
+                    deal_resp = requests.get(
+                        f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+                        headers=headers,
+                        params={"properties": "hubspot_owner_id"},
+                        timeout=10
+                    )
+                    if deal_resp.status_code == 200:
+                        owner_id = deal_resp.json().get("properties", {}).get("hubspot_owner_id")
+                except Exception:
+                    pass
+
+                # Due date = tomorrow
+                due_ts = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT09:00:00.000Z")
+                task_props = {
+                    "hs_task_subject": task_subject,
+                    "hs_task_body": task_body,
+                    "hs_task_status": "NOT_STARTED",
+                    "hs_task_priority": "HIGH",
+                    "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "hs_task_type": "TODO",
+                }
+                if owner_id:
+                    task_props["hubspot_owner_id"] = owner_id
+
+                task_payload = {
+                    "properties": task_props,
+                    "associations": [{
+                        "to": {"id": deal_id},
+                        "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 216}]
+                    }]
+                }
+                resp = requests.post(
+                    "https://api.hubapi.com/crm/v3/objects/tasks",
+                    headers=headers, json=task_payload, timeout=15
+                )
+                if resp.status_code in (200, 201):
+                    pushed += 1
+            except Exception:
+                # Fall back to just counting the deal update
                 pushed += 1
     return pushed
 
@@ -3384,11 +3466,16 @@ with tab_leads:
                     loc = row.get("location", "") or ""
                     cat_label = row.get("lead_category", "") or ""
                     phone = str(row.get("phone", "") or "").strip()
+                    acct_num = str(row.get("account_number", "") or "").strip()
+                    contact_email = str(row.get("email", "") or "").strip()
+                    contact_name = str(row.get("contact_name", "") or "").strip()
 
-                    # YTD spend
-                    ytd_parts = float(row.get("YTD Parts", 0) or 0) if "YTD Parts" in row.index else 0
-                    ytd_service = float(row.get("YTD Service", 0) or 0) if "YTD Service" in row.index else 0
-                    total_spend = ytd_parts + ytd_service
+                    # YTD spend (aggregation renames columns to lowercase)
+                    total_spend = float(row.get("total_spend", 0) or 0)
+                    if total_spend == 0:
+                        ytd_p = float(row.get("ytd_parts", 0) or row.get("YTD Parts", 0) or 0)
+                        ytd_s = float(row.get("ytd_service", 0) or row.get("YTD Service", 0) or 0)
+                        total_spend = ytd_p + ytd_s
 
                     # Accent color — use spend-based coloring instead of tiers
                     if total_spend > 10000 or pm_value > 0:
@@ -3427,20 +3514,30 @@ with tab_leads:
                     if total_spend > 0:
                         value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">YTD Spend</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${total_spend:,.0f}</span></div>'
                     if pm_value > 0:
-                        pm_label = f"Next PM @ {next_pm_hr:,} hrs" if next_pm_hr > 0 else "Est. PM Value"
+                        pm_label = f"Next PM @ {next_pm_hr:,} hrs" if next_pm_hr > 0 else "Next PM Cost"
                         value_pills += f'<div style="display:inline-block;margin-right:16px;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">{pm_label}</span><br><span style="font-size:18px;font-weight:700;color:#C8102E;">${pm_value:,.0f}</span></div>'
                     if parts_opp > 0:
-                        value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
+                        value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Spend</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
 
                     # Subtitle
                     subtitle_parts = []
+                    if acct_num:
+                        subtitle_parts.append(f"Acct# {acct_num}")
                     if loc:
                         subtitle_parts.append(loc)
                     if cat_label:
                         subtitle_parts.append(cat_label)
                     subtitle = " · ".join(subtitle_parts)
-                    phone_html = f' <span style="margin-left:8px;color:#2563EB;font-size:12px;">📞 {phone}</span>' if phone else ""
-                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}{phone_html}</div>' if (subtitle or phone) else ""
+                    # Contact info line
+                    contact_bits = []
+                    if contact_name:
+                        contact_bits.append(f'<span style="color:#374151;font-size:12px;font-weight:500;">{html_module.escape(contact_name)}</span>')
+                    if phone:
+                        contact_bits.append(f'<span style="color:#2563EB;font-size:12px;">Ph: {phone}</span>')
+                    if contact_email:
+                        contact_bits.append(f'<span style="color:#2563EB;font-size:12px;">{html_module.escape(contact_email)}</span>')
+                    contact_html = f'<div style="margin-top:2px;">{" · ".join(contact_bits)}</div>' if contact_bits else ""
+                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}</div>{contact_html}' if (subtitle or contact_bits) else ""
 
                     # Last contacted
                     last_contact_html = ""
@@ -3827,8 +3924,12 @@ with tab_tracker:
             st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
         with exp2:
             if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
-                pushed = push_alerts_to_hubspot(tracker_alerts)
-                st.success(f"Pushed {pushed} alert{'s' if pushed != 1 else ''} to HubSpot — workflow will notify reps")
+                with st.spinner("Creating HubSpot tasks and notifications..."):
+                    pushed = push_alerts_to_hubspot(tracker_alerts)
+                if pushed > 0:
+                    st.success(f"Created {pushed} task{'s' if pushed != 1 else ''} in HubSpot — deal owners will be notified")
+                else:
+                    st.warning("Could not push alerts. Check HubSpot API connection.")
         with exp3:
             if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
                 with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
