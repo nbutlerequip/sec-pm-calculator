@@ -3037,16 +3037,22 @@ def push_alerts_to_hubspot(alerts):
                 "hs_timestamp": str(due_ts),
                 "hs_task_type": "TODO",
             }
-            if owner_id:
-                task_props["hubspot_owner_id"] = owner_id
-
-            # Create task (no deal association needed — just the notification)
+            # Create task WITHOUT owner first, then assign owner in a second step.
+            # This two-step approach triggers HubSpot's "task assigned to you"
+            # notification (email, bell, browser, pop-up).
             task_payload = {"properties": task_props}
             resp = requests.post(
                 "https://api.hubapi.com/crm/v3/objects/tasks",
                 headers=headers, json=task_payload, timeout=15
             )
             if resp.status_code in (200, 201):
+                task_id = resp.json().get("id")
+                # Step 2: Assign owner to trigger notification
+                if owner_id and task_id:
+                    requests.patch(
+                        f"https://api.hubapi.com/crm/v3/objects/tasks/{task_id}",
+                        headers=headers, json={"properties": {"hubspot_owner_id": owner_id}}, timeout=10
+                    )
                 pushed += 1
             else:
                 err_detail = resp.text[:300] if resp.text else f"Status {resp.status_code}"
