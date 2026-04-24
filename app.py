@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import re
+import html as html_module
 import base64
 import requests
 from datetime import datetime, date
@@ -149,7 +151,7 @@ for model, info in PM_DEALSHEET.items():
 # Approximate annual PM values by category (for lead scoring only, not quoting)
 def match_model_to_dealsheet(alert_model):
     """Match a CASE alert model name to a PM_DEALSHEET key.
-    Handles suffixes like EVOLUTION, HS, EP, WT, and Cab variants.
+    Handles suffixes like EVOLUTION, HS, EP, WT, LC, and Cab variants.
     Returns the dealsheet key or None if no match.
     """
     if not alert_model or str(alert_model).strip() in ("", "Total"):
@@ -166,6 +168,26 @@ def match_model_to_dealsheet(alert_model):
     cab = base + " Cab"
     if cab in PM_DEALSHEET:
         return cab
+    # Strip trailing generation/variant suffixes for Kobelco (e.g., SK140SRLC-7 -> SK140SR-7)
+    # Remove LC/SLC/RLC before the dash (SK140SRLC-7 -> SK140SR-7)
+    stripped = re.sub(r'(SR|SRX)LC(-\d+)', r'\1\2', base)
+    if stripped in PM_DEALSHEET:
+        return stripped
+    # Try removing size variant suffix (BW120SL-5 -> BW120AD, etc.) — prefix match
+    # Find dealsheet keys that start with the same base number
+    base_num = re.match(r'^([A-Z]+\d+)', base)
+    if base_num:
+        prefix = base_num.group(1)
+        matches = [k for k in PM_DEALSHEET if k.startswith(prefix)]
+        if len(matches) == 1:
+            return matches[0]
+    # For wheel loaders with XR/TS suffixes (621GXR -> 621F or similar)
+    loader_match = re.match(r'^(\d+[A-Z]?)\s*(XR|TS|T4F)?', base)
+    if loader_match:
+        loader_base = loader_match.group(1)
+        loader_keys = [k for k in PM_DEALSHEET if k.startswith(loader_base[:3])]
+        if len(loader_keys) == 1:
+            return loader_keys[0]
     return None
 
 SERVICE_TYPES = ["Field", "Shop"]
@@ -3368,6 +3390,7 @@ with tab_leads:
                 for _, row in cust_display.iterrows():
                     tier = row["Tier"]
                     cust_name = row["Customer"]
+                    cust_name_safe = html_module.escape(str(cust_name))
                     tier_class = {"Top": "top", "High": "high", "Medium": "med"}.get(tier, "low")
                     tier_css = {"Top": "tier-top", "High": "tier-high", "Medium": "tier-med"}.get(tier, "")
 
@@ -3477,7 +3500,7 @@ with tab_leads:
                         f'<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-left:4px solid {accent};border-radius:10px;padding:18px 22px 14px 22px;margin-bottom:12px;">',
                         '<div style="display:flex;justify-content:space-between;align-items:flex-start;">',
                         '<div>',
-                        f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>',
+                        f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name_safe}</span>',
                         subtitle_html,
                         last_contact_html,
                         alert_html,
