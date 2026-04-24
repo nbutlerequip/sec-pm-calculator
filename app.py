@@ -669,7 +669,6 @@ def fetch_hubspot_deals():
                         wtype = (props.get("warranty_type__c") or "").lower()
                         winfo = (props.get("warranty_information__c") or "").upper()
                         if label == "won" and wtype and "no warranty" not in wtype and "as is" not in wtype and "n/a" not in wtype:
-                            import re
                             wyears = 0
                             # Try to extract years: "3 YEAR", "3 YR", "36 MONTH", "48 MONTHS", "5 YEAR"
                             yr_match = re.search(r'(\d+)\s*(?:YEAR|YR)', winfo)
@@ -2713,11 +2712,14 @@ def hubspot_create_or_update_pm_deal(deal_data):
 def _associate_deal_to_company(deal_id, customer_name, headers):
     """Associate a deal with a matching HubSpot company."""
     try:
-        # Search for the company
+        # CONTAINS_TOKEN requires a single token (no spaces) — use first word
+        search_token = customer_name.split()[0] if customer_name.strip() else ""
+        if not search_token:
+            return
         search = {
-            "filterGroups": [{"filters": [{"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": customer_name}]}],
+            "filterGroups": [{"filters": [{"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": search_token}]}],
             "properties": ["name"],
-            "limit": 1,
+            "limit": 5,
         }
         resp = requests.post(
             "https://api.hubapi.com/crm/v3/objects/companies/search",
@@ -2725,10 +2727,19 @@ def _associate_deal_to_company(deal_id, customer_name, headers):
         )
         if resp.status_code == 200:
             results = resp.json().get("results", [])
-            if results:
-                company_id = results[0]["id"]
+            # Find best match — prefer exact or substring match on customer name
+            cust_upper = customer_name.strip().upper()
+            best = None
+            for r in results:
+                rname = (r.get("properties", {}).get("name") or "").strip().upper()
+                if rname == cust_upper or cust_upper in rname or rname in cust_upper:
+                    best = r["id"]
+                    break
+            if not best and results:
+                best = results[0]["id"]
+            if best:
                 requests.put(
-                    f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}/associations/companies/{company_id}/deal_to_company",
+                    f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}/associations/companies/{best}/deal_to_company",
                     headers=headers, timeout=10
                 )
     except Exception:
@@ -3386,7 +3397,7 @@ with tab_leads:
             if cust_display.empty:
                 st.info("No customers match filters.")
             else:
-                CARDS_PER_PAGE = 25
+                CARDS_PER_PAGE = 15
                 total_custs = len(cust_display)
                 if "cust_page_size" not in st.session_state:
                     st.session_state.cust_page_size = CARDS_PER_PAGE
