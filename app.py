@@ -548,6 +548,7 @@ def fetch_hubspot_companies():
             "parts___service_engagement", "last_service_purchase",
             "last_parts_purchase", "last_parts_invoice_date__c",
             "sa_ytd_charges__c", "oe_ytd_charges__c",
+            "phone", "domain",
         ]),
     }
     try:
@@ -583,6 +584,8 @@ def fetch_hubspot_companies():
                         "ytd_service": float(props.get("sa_ytd_charges__c") or 0),
                         "ytd_parts": float(props.get("oe_ytd_charges__c") or 0),
                         "description": props.get("description", ""),
+                        "phone": props.get("phone", ""),
+                        "domain": props.get("domain", ""),
                     }
             paging = data.get("paging", {}).get("next", {})
             after = paging.get("after")
@@ -941,6 +944,14 @@ def enrich_leads_with_hubspot(scored_df, hs_companies, deal_history=None, pm_act
     df["Lead Category"] = hs_category
     df["Service Status"] = hs_service_status
 
+    # Add phone from HubSpot
+    phone_vals = []
+    for _, row in df.iterrows():
+        cust = row["cust_upper"]
+        match = _match_hubspot_company(cust, hs_companies)
+        phone_vals.append(match.get("phone", "") if match else "")
+    df["Phone"] = phone_vals
+
     # Apply the composite boost
     df["HS Boost"] = hs_boost
     df["Lead Score"] = (df["Lead Score"] * (1 + df["HS Boost"])).clip(0, 100).round(1)
@@ -1216,6 +1227,7 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             "Total Spend": total_spend,
             "has_procare": False,
             "is_internal": False,
+            "Phone": data.get("phone", ""),
         })
 
     if not rows:
@@ -1624,6 +1636,8 @@ def aggregate_customer_leads(scored_df):
         agg_dict["Parts Categories"] = ("Parts Categories", "first")
     if "Next PM Hrs" in scored_df.columns:
         agg_dict["next_pm_hrs"] = ("Next PM Hrs", "min")  # Soonest upcoming PM
+    if "Phone" in scored_df.columns:
+        agg_dict["phone"] = ("Phone", "first")
 
     agg = scored_df.groupby("Customer").agg(**agg_dict).reset_index()
 
@@ -2153,10 +2167,93 @@ def show_admin_dashboard():
     with col4:
         st.markdown(f'<div class="metric-card"><div class="label">PMs Sold</div><div class="value">{sold}</div></div>', unsafe_allow_html=True)
 
+    # PM Tracker Pipeline Data
+    pm_tracker_df = load_pm_tracker()
+    if not pm_tracker_df.empty:
+        for nc in ["Contract Value", "Eng Hours at Deal", "Next PM Due (hrs)"]:
+            if nc in pm_tracker_df.columns:
+                pm_tracker_df[nc] = pd.to_numeric(pm_tracker_df[nc], errors="coerce").fillna(0)
+
+        st.markdown("---")
+        st.markdown("### PM Pipeline Overview")
+
+        # Pipeline metrics
+        active_statuses = ["Lead Identified", "Called", "Quoted", "In Progress"]
+        active_deals = pm_tracker_df[pm_tracker_df["Status"].str.strip().isin(active_statuses)] if "Status" in pm_tracker_df.columns else pd.DataFrame()
+        sold_deals = pm_tracker_df[pm_tracker_df["Status"].str.strip().str.lower() == "sold"] if "Status" in pm_tracker_df.columns else pd.DataFrame()
+        not_interested_deals = pm_tracker_df[pm_tracker_df["Status"].str.strip().str.lower() == "not interested"] if "Status" in pm_tracker_df.columns else pd.DataFrame()
+
+        active_value = active_deals["Contract Value"].sum() if not active_deals.empty else 0
+        sold_value = sold_deals["Contract Value"].sum() if not sold_deals.empty else 0
+        total_pipeline = active_value + sold_value
+
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            st.markdown(f'<div class="metric-card"><div class="label">Active Pipeline</div><div class="value">${active_value:,.0f}</div></div>', unsafe_allow_html=True)
+        with p2:
+            st.markdown(f'<div class="metric-card"><div class="label">Sold Value</div><div class="value">${sold_value:,.0f}</div></div>', unsafe_allow_html=True)
+        with p3:
+            total_deals = len(pm_tracker_df)
+            sold_count = len(sold_deals)
+            conv_rate = (sold_count / total_deals * 100) if total_deals > 0 else 0
+            st.markdown(f'<div class="metric-card"><div class="label">Win Rate</div><div class="value">{conv_rate:.0f}%</div></div>', unsafe_allow_html=True)
+        with p4:
+            # Check alerts
+            pm_alerts = check_pm_alerts(pm_tracker_df, None)
+            st.markdown(f'<div class="metric-card"><div class="label">Active Alerts</div><div class="value">{len(pm_alerts)}</div></div>', unsafe_allow_html=True)
+
+        # Deal stage funnel
+        if "Status" in pm_tracker_df.columns:
+            stage_order = ["Lead Identified", "Called", "Quoted", "In Progress", "Sold", "Not Interested"]
+            stage_counts = pm_tracker_df["Status"].str.strip().value_counts()
+            funnel_data = []
+            for stage in stage_order:
+                count = stage_counts.get(stage, 0)
+                value = pm_tracker_df[pm_tracker_df["Status"].str.strip() == stage]["Contract Value"].sum()
+                if count > 0:
+                    funnel_data.append({"Stage": stage, "Deals": count, "Value": value})
+            if funnel_data:
+                funnel_df = pd.DataFrame(funnel_data)
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    fig = px.bar(funnel_df, x="Stage", y="Deals", title="Deals by Stage",
+                                 color_discrete_sequence=[SEC_RED])
+                    fig.update_layout(showlegend=False, height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+                with fc2:
+                    fig = px.bar(funnel_df, x="Stage", y="Value", title="Pipeline Value by Stage",
+                                 color_discrete_sequence=["#2F5496"])
+                    fig.update_layout(showlegend=False, height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+
+        # Pipeline by branch
+        if "Branch" in pm_tracker_df.columns and "Status" in pm_tracker_df.columns:
+            branch_pipeline = []
+            for bname in BRANCH_NAMES:
+                bdf = pm_tracker_df[pm_tracker_df["Branch"].str.strip() == bname]
+                if bdf.empty:
+                    branch_pipeline.append({"Branch": bname, "Deals": 0, "Pipeline $": 0, "Sold $": 0, "Win Rate": "0%"})
+                else:
+                    b_active = bdf[bdf["Status"].str.strip().isin(active_statuses)]
+                    b_sold = bdf[bdf["Status"].str.strip().str.lower() == "sold"]
+                    b_total = len(bdf)
+                    b_sold_n = len(b_sold)
+                    b_wr = f"{(b_sold_n / b_total * 100):.0f}%" if b_total > 0 else "0%"
+                    branch_pipeline.append({
+                        "Branch": bname,
+                        "Deals": b_total,
+                        "Pipeline $": f"${b_active['Contract Value'].sum():,.0f}" if not b_active.empty else "$0",
+                        "Sold $": f"${b_sold['Contract Value'].sum():,.0f}" if not b_sold.empty else "$0",
+                        "Win Rate": b_wr,
+                    })
+            bp_df = pd.DataFrame(branch_pipeline)
+            st.markdown("### Pipeline by Branch")
+            st.dataframe(bp_df, use_container_width=True, hide_index=True)
+
     st.markdown("---")
 
     # Region breakdown
-    st.markdown("### Performance by Region")
+    st.markdown("### Activity by Region")
     for region_name, branch_ids in REGIONS.items():
         region_branches = [BRANCHES[bid] for bid in branch_ids if bid in BRANCHES]
 
@@ -2192,12 +2289,32 @@ def show_admin_dashboard():
     # Monthly breakdown
     st.markdown("### Activity by Month")
     if not tracking_df.empty and "Month" in tracking_df.columns and "Status" in tracking_df.columns:
+        month_order = ["January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"]
         month_stats = tracking_df.groupby("Month").agg(
             Calls=("Status", lambda x: x.isin(["Called", "Quoted", "Sold", "In Progress"]).sum()),
             Quotes=("Status", lambda x: x.isin(["Quoted", "Sold"]).sum()),
             Sold=("Status", lambda x: (x == "Sold").sum()),
-        ).reset_index().sort_values("Sold", ascending=False)
-        st.dataframe(month_stats, use_container_width=True, hide_index=True)
+        ).reset_index()
+        month_stats["sort_key"] = month_stats["Month"].apply(lambda m: month_order.index(m) if m in month_order else 99)
+        month_stats = month_stats.sort_values("sort_key").drop(columns=["sort_key"])
+
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.dataframe(month_stats, use_container_width=True, hide_index=True)
+        with mc2:
+            if len(month_stats) > 0:
+                fig = px.bar(month_stats, x="Month", y=["Calls", "Quotes", "Sold"],
+                             title="Monthly Activity Trend", barmode="group",
+                             color_discrete_sequence=[SEC_RED, "#F59E0B", "#10B981"])
+                fig.update_layout(height=300, legend_title="")
+                st.plotly_chart(fig, use_container_width=True)
+
+        # Conversion rates
+        if called > 0:
+            call_to_quote = (quoted / called * 100) if called > 0 else 0
+            quote_to_sold = (sold / quoted * 100) if quoted > 0 else 0
+            st.markdown(f"**Conversion:** Calls → Quotes: **{call_to_quote:.0f}%** · Quotes → Sold: **{quote_to_sold:.0f}%** · Overall: **{(sold / called * 100) if called > 0 else 0:.0f}%**")
     else:
         st.info("No tracking data yet. Activity will appear here once branches start logging.")
 
@@ -2251,6 +2368,30 @@ def save_tracking_entry(customer_name, status, notes="", pm_value=0):
     except Exception:
         return False
 
+
+@st.cache_data(ttl=600)
+def load_last_contacted():
+    """Load the most recent contact date and status per customer from the Tracking sheet.
+    Returns dict of CUSTOMER_UPPER -> {"date": str, "status": str, "notes": str}."""
+    ws = get_tracking_sheet()
+    if ws is None:
+        return {}
+    try:
+        rows = ws.get_all_records()
+        last = {}
+        for r in rows:
+            cust = str(r.get("Customer", "")).strip().upper()
+            if not cust:
+                continue
+            date_str = str(r.get("Date", "")).strip()
+            status = str(r.get("Status", "")).strip()
+            # Keep the most recent entry per customer
+            existing = last.get(cust)
+            if not existing or date_str >= existing.get("date", ""):
+                last[cust] = {"date": date_str, "status": status, "notes": str(r.get("Notes", "")).strip()}
+        return last
+    except Exception:
+        return {}
 
 @st.cache_data(ttl=3600)
 def load_not_interested_customers():
@@ -3122,6 +3263,9 @@ with tab_leads:
     st.session_state.leads_df = all_leads
     st.session_state.procare_vins = procare_vins
 
+    # Load last contacted dates from tracking data
+    last_contacted = load_last_contacted()
+
     # Load PM Tracker and check for alerts
     pm_tracker = load_pm_tracker()
     pm_alerts = []
@@ -3189,11 +3333,17 @@ with tab_leads:
         st.markdown(tier_legend, unsafe_allow_html=True)
 
         # Filters
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             filter_tier = st.multiselect("Tier", ["Top", "High", "Medium", "Low"], default=["Top", "High"])
         with col2:
             pm_filter = st.radio("PM Status", ["No Active PM", "All", "Has Active PM"], horizontal=True) if "Has PM" in all_leads.columns else "All"
+        with col3:
+            # Branch filter — default to logged-in branch, "All Branches" shows everything
+            branch_options = ["All Branches"] + BRANCH_NAMES
+            logged_branch = st.session_state.get("branch_name", "All Branches")
+            default_idx = branch_options.index(logged_branch) if logged_branch in branch_options else 0
+            filter_branch = st.selectbox("Branch", branch_options, index=default_idx, key="lead_branch_filter")
 
         # Apply filters
         display = all_leads.copy()
@@ -3203,6 +3353,8 @@ with tab_leads:
             display = display[~display["Has PM"]]
         elif pm_filter == "Has Active PM" and "Has PM" in display.columns:
             display = display[display["Has PM"]]
+        if filter_branch != "All Branches" and "Location" in display.columns:
+            display = display[display["Location"].str.strip().str.lower() == filter_branch.strip().lower()]
 
         # View toggle
         view = st.radio("View", ["By Customer", "By Machine/Lead"], horizontal=True)
@@ -3236,6 +3388,7 @@ with tab_leads:
                     score = row["Customer Score"]
                     loc = row.get("location", "") or ""
                     cat_label = row.get("lead_category", "") or ""
+                    phone = str(row.get("phone", "") or "").strip()
 
                     # Tier accent color
                     accent = {"Top": "#C8102E", "High": "#F59E0B", "Medium": "#3B82F6"}.get(tier, "#9CA3AF")
@@ -3272,14 +3425,30 @@ with tab_leads:
                     if parts_opp > 0:
                         value_pills += f'<div style="display:inline-block;"><span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;">Parts Opp</span><br><span style="font-size:18px;font-weight:700;color:#1A1A1A;">${parts_opp:,.0f}</span></div>'
 
-                    # Location + category subtitle
+                    # Location + category + phone subtitle
                     subtitle_parts = []
                     if loc:
                         subtitle_parts.append(loc)
                     if cat_label:
                         subtitle_parts.append(cat_label)
                     subtitle = " · ".join(subtitle_parts)
-                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}</div>' if subtitle else ""
+                    phone_html = f' <span style="margin-left:8px;color:#2563EB;font-size:12px;">📞 {phone}</span>' if phone else ""
+                    subtitle_html = f'<div style="font-size:12px;color:#9CA3AF;margin-top:2px;">{subtitle}{phone_html}</div>' if (subtitle or phone) else ""
+
+                    # Last contacted info
+                    last_contact_html = ""
+                    lc = last_contacted.get(cust_name.strip().upper())
+                    if lc:
+                        lc_date = lc.get("date", "")[:10]
+                        lc_status = lc.get("status", "")
+                        lc_color = {"Called": "#3B82F6", "Quoted": "#F59E0B", "Sold": "#10B981", "In Progress": "#8B5CF6", "Not Interested": "#9CA3AF"}.get(lc_status, "#6B7280")
+                        last_contact_html = (
+                            f'<div style="margin-top:4px;">'
+                            f'<span style="font-size:11px;color:#9CA3AF;">Last contact:</span> '
+                            f'<span style="font-size:11px;color:{lc_color};font-weight:500;">{lc_status}</span>'
+                            f'<span style="font-size:11px;color:#9CA3AF;"> — {lc_date}</span>'
+                            f'</div>'
+                        )
 
                     # Build alert badges if this customer has active alerts
                     cust_alerts = pm_alerts_by_customer.get(cust_name.strip().upper(), [])
@@ -3310,6 +3479,7 @@ with tab_leads:
                         '<div>',
                         f'<span style="font-size:16px;font-weight:700;color:#1A1A1A;">{cust_name}</span>',
                         subtitle_html,
+                        last_contact_html,
                         alert_html,
                         '</div>',
                         '<div style="text-align:right;min-width:60px;">',
