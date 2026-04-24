@@ -375,10 +375,19 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         cust_lower = cust_upper.lower()
         if any(kw in cust_lower for kw in exclude_keywords):
             continue
-        # Skip if already in CASE alerts or HubSpot
+        # Skip if already in CASE alerts or HubSpot (tightened matching to avoid false positives)
         already = False
         for ex in existing_upper:
-            if ex and cust_upper and (ex == cust_upper or ex in cust_upper or cust_upper in ex):
+            if not ex or not cust_upper:
+                continue
+            if ex == cust_upper:
+                already = True
+                break
+            # Only allow substring match if the shorter name is long enough (10+ chars)
+            # and covers at least 70% of the longer name to prevent false matches
+            # like "CITY OF GREEN" matching "CITY OF GREENFIELD"
+            shorter, longer = (ex, cust_upper) if len(ex) <= len(cust_upper) else (cust_upper, ex)
+            if len(shorter) >= 10 and shorter in longer and len(shorter) / len(longer) >= 0.70:
                 already = True
                 break
         if already:
@@ -1027,10 +1036,13 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
         # Skip if already in CASE alerts
         if hs_name in existing_upper:
             continue
-        # Skip partial matches too
+        # Skip partial matches too (tightened to avoid false positives)
         skip = False
         for ex in existing_upper:
-            if ex and hs_name and (ex in hs_name or hs_name in ex):
+            if not ex or not hs_name:
+                continue
+            shorter, longer = (ex, hs_name) if len(ex) <= len(hs_name) else (hs_name, ex)
+            if len(shorter) >= 10 and shorter in longer and len(shorter) / len(longer) >= 0.70:
                 skip = True
                 break
         if skip:
@@ -1073,7 +1085,8 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
                 pass
 
         # Determine if this customer has enough signal to be worth showing
-        # Need at least SOME indicator: spend, deals, fleet info, or classification
+        # Broadened: include any company with spend, deals, fleet, classification,
+        # lifecycle stage, prospect classification, or account stage
         case_class = data.get("case_class", "")
         prospect_class = data.get("prospect_class", "")
         account_stage = data.get("account_stage", "")
@@ -1085,6 +1098,9 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
             deals_won > 0 or
             fleet not in ("", "0 - Rent Only") or
             case_class != "" or
+            prospect_class != "" or
+            account_stage != "" or
+            lifecycle not in ("", "subscriber") or
             warranty_status in ("expiring", "expired")
         )
 
@@ -3150,14 +3166,12 @@ with tab_leads:
         existing_customers = set(scored["Customer"].str.strip().str.upper()) if not scored.empty else set()
         hs_only_leads = build_hubspot_only_leads(hs_companies, deal_history, pm_active, existing_customers)
 
-        # Filter HubSpot-only leads to customers tied to our 4 brands
+        # Filter HubSpot-only leads — broadened to include any customer with
+        # brand ties, spend history, or active engagement with SEC
         if not hs_only_leads.empty:
-            target_brands = {"case", "kobelco", "develon", "bomag"}
-            # Model prefixes that are specific enough to not false-match
             brand_keywords = [
                 "kobelco", "develon", "bomag", "doosan",
                 "case ce", "case construction",
-                # CASE model prefixes (with enough context to avoid false matches)
                 "cx80", "cx130", "cx160", "cx210", "cx220", "cx240", "cx250",
                 "cx300", "cx350", "cx370", "cx490", "cx500", "cx750", "cx800",
                 "dx55", "dx60", "dx140", "dx225", "dx235", "dx255", "dx300", "dx350", "dx380", "dx420", "dx490", "dx530",
@@ -3166,32 +3180,44 @@ with tab_leads:
                 "321f", "521g", "621g", "721g", "821g", "921g",
                 "650m", "750m", "850m",
                 "tv450", "tr270", "tr310", "tr320", "tr340",
-                # Kobelco models
                 "sk55", "sk75", "sk140", "sk170", "sk210", "sk230", "sk260",
                 "sk300", "sk350", "sk390", "sk490", "sk500", "sk850",
-                # Bomag models
                 "bw120", "bw145", "bw177", "bw190", "bw206", "bw211", "bw213",
                 "bw219", "bw226", "bw900",
                 "bf200", "bf300", "bf600", "bf700", "bf800",
             ]
-            def _is_target_brand_customer(hs_name):
-                """Check if this HubSpot customer is associated with our 4 dealsheet brands."""
+            def _is_relevant_customer(hs_name):
+                """Check if this HubSpot customer is relevant for PM outreach.
+                Broadened: includes any company with brand ties, spend, or deal history at SEC."""
                 data = hs_companies.get(hs_name.upper(), {})
-                # Check CASE classification (if set, they're tagged for CASE/Kobelco/etc)
+                # CASE classification (tagged for our brands)
                 case_class = (data.get("case_class", "") or "").lower()
                 if case_class and case_class not in ("", "competitor", "competitive"):
                     return True
-                # Check prospect classification for any of the 4 brands
+                # Prospect classification mentioning our brands
                 prospect_class = (data.get("prospect_class", "") or "").lower()
                 if prospect_class:
                     for brand in ("case", "kobelco", "develon", "bomag", "doosan"):
                         if brand in prospect_class:
                             return True
-                # Won deals = bought equipment from SEC (SEC only sells these 4 brands)
+                # Won deals = bought equipment from SEC (SEC sells our 4 brands)
                 deal_info = deal_history.get(hs_name.upper(), {})
                 if deal_info.get("won", 0) > 0:
                     return True
-                # Check deal names for brand/model keywords (e.g. "CX350 - SMITH CONST")
+                # Any YTD spend at SEC = active customer worth including
+                ytd_parts = float(data.get("ytd_parts", 0) or 0)
+                ytd_service = float(data.get("ytd_service", 0) or 0)
+                if ytd_parts + ytd_service > 0:
+                    return True
+                # Fleet size set = they own equipment
+                fleet = data.get("fleet_size", "")
+                if fleet and fleet not in ("", "0 - Rent Only"):
+                    return True
+                # Account stage indicates active relationship
+                account_stage = (data.get("account_stage", "") or "").lower()
+                if account_stage and account_stage not in ("", "unknown"):
+                    return True
+                # Brand/model keywords in deal names or description
                 deal_names = (deal_info.get("deal_names", "") or "").lower()
                 desc = (data.get("description", "") or "").lower()
                 combined_text = f"{deal_names} {desc}"
@@ -3200,7 +3226,7 @@ with tab_leads:
                         return True
                 return False
 
-            mask = hs_only_leads["Customer"].apply(lambda c: _is_target_brand_customer(str(c).strip()))
+            mask = hs_only_leads["Customer"].apply(lambda c: _is_relevant_customer(str(c).strip()))
             hs_only_leads = hs_only_leads[mask].copy()
 
     # Load equipment report leads (customers who bought our 4 brands but aren't in alerts/HubSpot)
