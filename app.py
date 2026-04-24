@@ -375,22 +375,8 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         cust_lower = cust_upper.lower()
         if any(kw in cust_lower for kw in exclude_keywords):
             continue
-        # Skip if already in CASE alerts or HubSpot (tightened matching to avoid false positives)
-        already = False
-        for ex in existing_upper:
-            if not ex or not cust_upper:
-                continue
-            if ex == cust_upper:
-                already = True
-                break
-            # Only allow substring match if the shorter name is long enough (10+ chars)
-            # and covers at least 70% of the longer name to prevent false matches
-            # like "CITY OF GREEN" matching "CITY OF GREENFIELD"
-            shorter, longer = (ex, cust_upper) if len(ex) <= len(cust_upper) else (cust_upper, ex)
-            if len(shorter) >= 10 and shorter in longer and len(shorter) / len(longer) >= 0.70:
-                already = True
-                break
-        if already:
+        # Skip if already in CASE alerts or HubSpot (exact match only to maximize leads)
+        if cust_upper in existing_upper:
             continue
 
         # Aggregate this customer's equipment
@@ -1033,19 +1019,8 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
 
     rows = []
     for hs_name, data in hs_companies.items():
-        # Skip if already in CASE alerts
+        # Skip if already in CASE alerts (exact match only to maximize leads)
         if hs_name in existing_upper:
-            continue
-        # Skip partial matches too (tightened to avoid false positives)
-        skip = False
-        for ex in existing_upper:
-            if not ex or not hs_name:
-                continue
-            shorter, longer = (ex, hs_name) if len(ex) <= len(hs_name) else (hs_name, ex)
-            if len(shorter) >= 10 and shorter in longer and len(shorter) / len(longer) >= 0.70:
-                skip = True
-                break
-        if skip:
             continue
 
         # Skip rent-only accounts
@@ -1093,15 +1068,18 @@ def build_hubspot_only_leads(hs_companies, deal_history, pm_active_companies, ex
         lifecycle = data.get("lifecycle", "")
         annual_rev = data.get("annual_revenue", "")
 
+        num_deals = int(data.get("deals", 0) or 0)
         has_signal = (
             total_spend > 0 or
             deals_won > 0 or
+            num_deals > 0 or
             fleet not in ("", "0 - Rent Only") or
             case_class != "" or
             prospect_class != "" or
             account_stage != "" or
             lifecycle not in ("", "subscriber") or
-            warranty_status in ("expiring", "expired")
+            warranty_status in ("expiring", "expired") or
+            annual_rev not in ("", "0", None)
         )
 
         if not has_signal:
