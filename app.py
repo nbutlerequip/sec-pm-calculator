@@ -2984,7 +2984,7 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
     return alerts
 
 def push_alerts_to_hubspot(alerts):
-    """Push alert flags to HubSpot deals and create tasks for notifications.
+    """Create HubSpot tasks for PM alerts — sends native notifications.
     Returns (pushed_count, error_messages_list)."""
     errors = []
     if not HUBSPOT_TOKEN:
@@ -2992,8 +2992,8 @@ def push_alerts_to_hubspot(alerts):
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     pushed = 0
 
-    # First, get the HubSpot owner ID for nbutler to use as fallback
-    fallback_owner_id = None
+    # Get the HubSpot owner ID for nbutler
+    owner_id = None
     try:
         owners_resp = requests.get(
             "https://api.hubapi.com/crm/v3/owners",
@@ -3002,117 +3002,67 @@ def push_alerts_to_hubspot(alerts):
         if owners_resp.status_code == 200:
             for owner in owners_resp.json().get("results", []):
                 email = (owner.get("email") or "").lower()
-                if "nbutler" in email or "nick" in email.split("@")[0]:
-                    fallback_owner_id = owner["id"]
+                if "nbutler" in email:
+                    owner_id = owner["id"]
                     break
-            # If not found by name, just use the first active owner
-            if not fallback_owner_id:
+            if not owner_id:
                 results = owners_resp.json().get("results", [])
                 if results:
-                    fallback_owner_id = results[0]["id"]
+                    owner_id = results[0]["id"]
+                    errors.append(f"nbutler not found in owners, using {results[0].get('email', 'first owner')}")
+        else:
+            errors.append(f"Owner lookup failed: {owners_resp.status_code}")
     except Exception as e:
-        errors.append(f"Owner lookup: {e}")
+        errors.append(f"Owner lookup error: {e}")
 
     for alert in alerts:
-        deal_id = alert.get("hs_deal_id", "")
-        # Clean up deal_id
-        if deal_id and str(deal_id).strip() not in ("", "nan", "None", "0"):
-            deal_id = str(deal_id).strip()
-        else:
-            deal_id = None
+        try:
+            alert_type_label = {
+                "hours_overdue": "OVERDUE",
+                "hours_approaching": "PM DUE SOON",
+                "followup_overdue": "FOLLOW-UP NEEDED",
+            }.get(alert.get("type", ""), "PM ALERT")
+            customer = alert.get("customer", "Unknown")
+            model = alert.get("model", "")
+            task_subject = f"PM Alert: {alert_type_label} - {customer} {model}".strip()
+            task_body = alert.get("message", "Action needed on this PM deal.")
 
-        # If no HubSpot deal exists, create one first
-        if not deal_id:
-            deal_data = {
-                "customer": alert.get("customer", ""),
-                "model": alert.get("model", ""),
-                "serial": alert.get("serial", ""),
-                "status": "Quoted",
-                "contract_value": 0,
+            # Due date = tomorrow at 9am
+            due_ts = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            task_props = {
+                "hs_task_subject": task_subject,
+                "hs_task_body": task_body,
+                "hs_task_status": "NOT_STARTED",
+                "hs_task_priority": "HIGH",
+                "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "hs_task_type": "TODO",
+                "hs_task_due_date": due_ts,
             }
-            deal_id = hubspot_create_or_update_pm_deal(deal_data)
-            if not deal_id:
-                errors.append(f"Could not create deal for {alert.get('customer', '?')}")
+            if owner_id:
+                task_props["hubspot_owner_id"] = owner_id
 
-        if deal_id:
-            # Update deal properties with alert info
-            hubspot_update_pm_alert(str(deal_id), alert["type"], alert["message"])
+            # Create task (no deal association needed — just the notification)
+            task_payload = {"properties": task_props}
+            resp = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/tasks",
+                headers=headers, json=task_payload, timeout=15
+            )
+            if resp.status_code in (200, 201):
+                pushed += 1
+            else:
+                err_detail = resp.text[:300] if resp.text else f"Status {resp.status_code}"
+                errors.append(f"Task create failed for {customer}: {err_detail}")
+        except Exception as e:
+            errors.append(f"Task error for {alert.get('customer', '?')}: {e}")
 
-            # Create a HubSpot task
+        # Also try to update deal properties if deal exists
+        deal_id = alert.get("hs_deal_id", "")
+        if deal_id and str(deal_id).strip() not in ("", "nan", "None", "0"):
             try:
-                alert_type_label = {
-                    "hours_overdue": "OVERDUE",
-                    "hours_approaching": "PM DUE SOON",
-                    "followup_overdue": "FOLLOW-UP NEEDED",
-                }.get(alert["type"], "PM ALERT")
-                customer = alert.get("customer", "Unknown")
-                model = alert.get("model", "")
-                task_subject = f"PM Alert: {alert_type_label} - {customer} {model}".strip()
-                task_body = alert.get("message", "Action needed on this PM deal.")
+                hubspot_update_pm_alert(str(deal_id).strip(), alert.get("type", ""), alert.get("message", ""))
+            except Exception:
+                pass
 
-                # Get deal owner to assign the task
-                owner_id = None
-                try:
-                    deal_resp = requests.get(
-                        f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
-                        headers=headers,
-                        params={"properties": "hubspot_owner_id"},
-                        timeout=10
-                    )
-                    if deal_resp.status_code == 200:
-                        owner_id = deal_resp.json().get("properties", {}).get("hubspot_owner_id")
-                except Exception:
-                    pass
-
-                # Use fallback owner if deal has no owner
-                if not owner_id:
-                    owner_id = fallback_owner_id
-
-                # Due date = tomorrow at 9am
-                due_ts = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                task_props = {
-                    "hs_task_subject": task_subject,
-                    "hs_task_body": task_body,
-                    "hs_task_status": "NOT_STARTED",
-                    "hs_task_priority": "HIGH",
-                    "hs_timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "hs_task_type": "TODO",
-                    "hs_task_due_date": due_ts,
-                }
-                if owner_id:
-                    task_props["hubspot_owner_id"] = owner_id
-
-                # Try creating task with deal association
-                task_payload = {
-                    "properties": task_props,
-                    "associations": [{
-                        "to": {"id": deal_id},
-                        "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 216}]
-                    }]
-                }
-                resp = requests.post(
-                    "https://api.hubapi.com/crm/v3/objects/tasks",
-                    headers=headers, json=task_payload, timeout=15
-                )
-                if resp.status_code in (200, 201):
-                    pushed += 1
-                else:
-                    err_detail = resp.text[:200] if resp.text else f"Status {resp.status_code}"
-                    errors.append(f"Task create (with assoc) failed: {err_detail}")
-                    # Retry without association
-                    task_payload_simple = {"properties": task_props}
-                    resp2 = requests.post(
-                        "https://api.hubapi.com/crm/v3/objects/tasks",
-                        headers=headers, json=task_payload_simple, timeout=15
-                    )
-                    if resp2.status_code in (200, 201):
-                        pushed += 1
-                        errors.append("(Retried without association — succeeded)")
-                    else:
-                        err2 = resp2.text[:200] if resp2.text else f"Status {resp2.status_code}"
-                        errors.append(f"Task create (simple) also failed: {err2}")
-            except Exception as e:
-                errors.append(f"Task exception: {e}")
     return pushed, errors
 
 @st.cache_data(ttl=86400)
