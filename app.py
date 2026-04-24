@@ -1964,8 +1964,8 @@ def calculate_pm_cost(model_key, hours_requested):
     # Interval 1 (e.g. 250hr) - only some models have this
     if ds["hr_1"] and ds["cost_1"]:
         # Count how many Interval 1 services occur, minus those covered by Interval 2
-        n1_total = (hours_requested - 1) // ds["hr_1"] if ds["hr_1"] > 0 else 0
-        n2_total = (hours_requested - 1) // ds["hr_2"] if ds["hr_2"] > 0 else 0
+        n1_total = hours_requested // ds["hr_1"] if ds["hr_1"] > 0 else 0
+        n2_total = hours_requested // ds["hr_2"] if ds["hr_2"] > 0 else 0
         n1_net = max(n1_total - n2_total, 0)
         if n1_net > 0:
             intervals.append({"name": f"Interval 1 ({ds['hr_1']}hr)", "hours": ds["hr_1"], "qty": n1_net, "cost_per": ds["cost_1"], "subtotal": n1_net * ds["cost_1"]})
@@ -1973,8 +1973,8 @@ def calculate_pm_cost(model_key, hours_requested):
 
     # Interval 2 (typically 500hr)
     if ds["hr_2"] and ds["cost_2"]:
-        n2_total = (hours_requested - 1) // ds["hr_2"] if ds["hr_2"] > 0 else 0
-        n3_total = (hours_requested - 1) // ds["hr_3"] if ds["hr_3"] > 0 else 0
+        n2_total = hours_requested // ds["hr_2"] if ds["hr_2"] > 0 else 0
+        n3_total = hours_requested // ds["hr_3"] if ds["hr_3"] > 0 else 0
         n2_net = max(n2_total - n3_total, 0)
         if n2_net > 0:
             intervals.append({"name": f"Interval 2 ({ds['hr_2']}hr)", "hours": ds["hr_2"], "qty": n2_net, "cost_per": ds["cost_2"], "subtotal": n2_net * ds["cost_2"]})
@@ -1982,14 +1982,14 @@ def calculate_pm_cost(model_key, hours_requested):
 
     # Interval 3 (typically 1000hr)
     if ds["hr_3"] and ds["cost_3"]:
-        n3_total = (hours_requested - 1) // ds["hr_3"] if ds["hr_3"] > 0 else 0
+        n3_total = hours_requested // ds["hr_3"] if ds["hr_3"] > 0 else 0
         if n3_total > 0:
             intervals.append({"name": f"Interval 3 ({ds['hr_3']}hr)", "hours": ds["hr_3"], "qty": n3_total, "cost_per": ds["cost_3"], "subtotal": n3_total * ds["cost_3"]})
             total += n3_total * ds["cost_3"]
 
-    # Specialty service (one-time at specific hour mark)
+    # Specialty service (at specific hour mark)
     if ds["hr_s"] and ds["cost_s"]:
-        n_s = (hours_requested - 1) // ds["hr_s"] if ds["hr_s"] > 0 else 0
+        n_s = hours_requested // ds["hr_s"] if ds["hr_s"] > 0 else 0
         if n_s > 0:
             intervals.append({"name": f"Specialty ({ds['hr_s']}hr)", "hours": ds["hr_s"], "qty": n_s, "cost_per": ds["cost_s"], "subtotal": n_s * ds["cost_s"]})
             total += n_s * ds["cost_s"]
@@ -2363,7 +2363,7 @@ def get_tracking_sheet():
             if ws.title == "Tracking":
                 return ws
         # Create it if missing
-        tracking_ws = sheet.spreadsheet.add_worksheet(title="Tracking", rows=5000, cols=10)
+        tracking_ws = sheet.spreadsheet.add_worksheet(title="Tracking", rows=5000, cols=7)
         tracking_ws.append_row(["Date", "Month", "Branch", "Customer", "Status", "Notes", "PM Value"], value_input_option="USER_ENTERED")
         return tracking_ws
     except Exception:
@@ -2494,9 +2494,11 @@ def save_pm_tracker_entry(data):
             intervals = [ds.get(f"hr_{k}") for k in ["i", "1", "2", "3", "s"] if ds.get(f"hr_{k}")]
             if intervals:
                 pm_interval = min(intervals)
-        eng_hours = int(data.get("eng_hours", 0))
+        eng_hours = max(0, int(data.get("eng_hours", 0)))
         # Calculate next PM due: next multiple of the interval above current hours
-        if eng_hours > 0 and pm_interval > 0:
+        if pm_interval <= 0:
+            pm_interval = 500  # safety fallback
+        if eng_hours > 0:
             next_pm = ((eng_hours // pm_interval) + 1) * pm_interval
         else:
             next_pm = pm_interval
