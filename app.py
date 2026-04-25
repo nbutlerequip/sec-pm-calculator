@@ -206,6 +206,8 @@ if "branch_name" not in st.session_state:
     st.session_state.branch_name = None
 if "login_month" not in st.session_state:
     st.session_state.login_month = None
+if "rep_name" not in st.session_state:
+    st.session_state.rep_name = ""
 if "current_quote" not in st.session_state:
     st.session_state.current_quote = {}
 
@@ -2124,6 +2126,9 @@ def show_login():
             branch_map[label] = num
         selected = st.selectbox("Branch", options, label_visibility="collapsed")
 
+        st.markdown("#### Your Name")
+        rep_name_input = st.text_input("Your Name", placeholder="e.g. Nick Butler", label_visibility="collapsed")
+
         st.markdown("#### Month")
         month_options = ["January", "February", "March", "April", "May", "June",
                          "July", "August", "September", "October", "November", "December"]
@@ -2133,13 +2138,16 @@ def show_login():
         st.markdown("<br>", unsafe_allow_html=True)
 
         if st.button("Start", use_container_width=True, type="primary"):
-            if selected:
+            if selected and rep_name_input.strip():
                 branch_id = branch_map[selected]
                 st.session_state.branch = branch_id
                 st.session_state.branch_name = BRANCHES[branch_id]
                 st.session_state.login_month = selected_month
+                st.session_state.rep_name = rep_name_input.strip()
                 st.session_state.page = "dashboard"
                 st.rerun()
+            elif not rep_name_input.strip():
+                st.warning("Enter your name to continue.")
             else:
                 st.warning("Pick your branch to continue.")
 
@@ -2208,6 +2216,7 @@ def show_admin_dashboard():
             st.session_state.branch = None
             st.session_state.branch_name = None
             st.session_state.login_month = None
+            st.session_state.rep_name = ""
             st.rerun()
 
     # Load tracking data from Google Sheets
@@ -3038,8 +3047,9 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
 
     return alerts
 
-def push_alerts_to_hubspot(alerts):
+def push_alerts_to_hubspot(alerts, rep_name=""):
     """Create HubSpot tasks for PM alerts — sends native notifications.
+    Assigns tasks to the logged-in rep by matching their name to HubSpot owners.
     Returns (pushed_count, error_messages_list)."""
     errors = []
     if not HUBSPOT_TOKEN:
@@ -3047,24 +3057,35 @@ def push_alerts_to_hubspot(alerts):
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     pushed = 0
 
-    # Get the HubSpot owner ID for nbutler
+    # Get the HubSpot owner ID matching the logged-in rep
     owner_id = None
+    rep_name_lower = (rep_name or "").strip().lower()
     try:
         owners_resp = requests.get(
             "https://api.hubapi.com/crm/v3/owners",
             headers=headers, params={"limit": 100}, timeout=10
         )
         if owners_resp.status_code == 200:
-            for owner in owners_resp.json().get("results", []):
-                email = (owner.get("email") or "").lower()
-                if "nbutler" in email:
-                    owner_id = owner["id"]
-                    break
-            if not owner_id:
-                results = owners_resp.json().get("results", [])
-                if results:
-                    owner_id = results[0]["id"]
-                    errors.append(f"nbutler not found in owners, using {results[0].get('email', 'first owner')}")
+            results = owners_resp.json().get("results", [])
+            # Try to match by rep name (first+last, last name, or email prefix)
+            if rep_name_lower:
+                for owner in results:
+                    o_first = (owner.get("firstName") or "").lower()
+                    o_last = (owner.get("lastName") or "").lower()
+                    o_email = (owner.get("email") or "").lower()
+                    o_full = f"{o_first} {o_last}".strip()
+                    # Match: full name, last name, or email prefix contains rep name parts
+                    if (rep_name_lower == o_full
+                            or rep_name_lower in o_full
+                            or o_full in rep_name_lower
+                            or rep_name_lower.split()[-1] == o_last
+                            or rep_name_lower.replace(" ", "") in o_email):
+                        owner_id = owner["id"]
+                        break
+            # Fallback: use first available owner
+            if not owner_id and results:
+                owner_id = results[0]["id"]
+                errors.append(f"Could not match '{rep_name}' to a HubSpot owner, using {results[0].get('email', 'first owner')}")
         else:
             errors.append(f"Owner lookup failed: {owners_resp.status_code}")
     except Exception as e:
@@ -3222,7 +3243,7 @@ elif st.session_state.page == "admin":
 st.markdown(f"""
 <div class="header-bar">
     <span class="branch-name">{st.session_state.branch_name} &mdash; PM Tool</span>
-    <span class="rep-info">{st.session_state.login_month or ""}</span>
+    <span class="rep-info">{st.session_state.rep_name or ""} &bull; {st.session_state.login_month or ""}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3233,6 +3254,7 @@ with col_head_r:
         st.session_state.branch = None
         st.session_state.branch_name = None
         st.session_state.login_month = None
+        st.session_state.rep_name = ""
         st.rerun()
 
 # Auto-setup HubSpot PM pipeline, alert properties, and workflow (runs once, cached 24hrs)
@@ -3501,13 +3523,25 @@ with tab_leads:
                     cust_name = row["Customer"]
                     cust_name_safe = html_module.escape(str(cust_name))
 
-                    # Build machine list
+                    # Build machine list — combine Model column with Equip Models for full fleet
                     machines_str = ""
                     cust_machines = display[display["Customer"] == cust_name]
-                    if not cust_machines.empty and "Model" in cust_machines.columns:
-                        models = sorted(set(str(m) for m in cust_machines["Model"] if m and str(m).strip()))
-                        if models:
-                            machines_str = ", ".join(models)
+                    all_models = set()
+                    if not cust_machines.empty:
+                        # Get individual Model values (one per row, from CASE alerts)
+                        if "Model" in cust_machines.columns:
+                            for m in cust_machines["Model"]:
+                                if m and str(m).strip() and str(m).strip().lower() not in ("nan", "none", ""):
+                                    all_models.add(str(m).strip())
+                        # Also pull from Equip Models (comma-separated full fleet from equipment report)
+                        if "Equip Models" in cust_machines.columns:
+                            for em in cust_machines["Equip Models"]:
+                                if em and str(em).strip() and str(em).strip().lower() not in ("nan", "none", ""):
+                                    for part in str(em).split(","):
+                                        if part.strip():
+                                            all_models.add(part.strip())
+                    if all_models:
+                        machines_str = ", ".join(sorted(all_models))
                     elif "fleet" in row and row.get("fleet"):
                         machines_str = f"Fleet: {row['fleet']}"
 
@@ -3979,7 +4013,7 @@ with tab_tracker:
             def _push_alerts_fragment():
                 if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                     with st.spinner("Creating HubSpot tasks and notifications..."):
-                        pushed, push_errors = push_alerts_to_hubspot(tracker_alerts)
+                        pushed, push_errors = push_alerts_to_hubspot(tracker_alerts, rep_name=st.session_state.get("rep_name", ""))
                     st.session_state["hs_push_result"] = {"pushed": pushed, "errors": push_errors}
 
                 # Show results from session state so they persist across reruns
