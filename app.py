@@ -533,7 +533,7 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
             "is_internal": False,
             "Equip Machines": machines,
             "Equip Brands": ", ".join(brands),
-            "Equip Models": ", ".join(models[:5]),
+            "Equip Models": ", ".join(models[:10]),
             "Equip Total Sold": total_sell,
         })
 
