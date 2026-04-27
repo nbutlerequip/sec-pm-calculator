@@ -2137,6 +2137,7 @@ def show_login():
 
         st.markdown("#### Your Name")
         rep_name_input = st.text_input("Your Name", placeholder="e.g. Nick Butler", label_visibility="collapsed")
+        st.caption("Enter your name exactly as it appears in HubSpot so alerts are assigned to you.")
 
         st.markdown("#### Month")
         month_options = ["January", "February", "March", "April", "May", "June",
