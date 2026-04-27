@@ -3057,49 +3057,90 @@ def check_pm_alerts(pm_tracker_df, current_fleet_df=None):
 
     return alerts
 
-def push_alerts_to_hubspot(alerts, rep_name=""):
+def push_alerts_to_hubspot(alerts, rep_name="", hs_companies=None):
     """Create HubSpot tasks for PM alerts — sends native notifications.
     Assigns tasks to the logged-in rep by matching their name to HubSpot owners.
-    Returns (pushed_count, error_messages_list)."""
+    Checks for existing open tasks to prevent duplicates.
+    Associates tasks to HubSpot company records when possible.
+    Returns (pushed_count, skipped_count, error_messages_list)."""
     errors = []
     if not HUBSPOT_TOKEN:
-        return 0, ["No HubSpot token configured"]
+        return 0, 0, ["No HubSpot token configured"]
     headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
     pushed = 0
+    skipped = 0
 
-    # Get the HubSpot owner ID matching the logged-in rep
+    # Get ALL HubSpot owners (paginate to get everyone)
     owner_id = None
     rep_name_lower = (rep_name or "").strip().lower()
     try:
-        owners_resp = requests.get(
-            "https://api.hubapi.com/crm/v3/owners",
-            headers=headers, params={"limit": 100}, timeout=10
-        )
-        if owners_resp.status_code == 200:
-            results = owners_resp.json().get("results", [])
-            # Try to match by rep name (first+last, last name, or email prefix)
-            if rep_name_lower:
-                for owner in results:
-                    o_first = (owner.get("firstName") or "").lower()
-                    o_last = (owner.get("lastName") or "").lower()
-                    o_email = (owner.get("email") or "").lower()
-                    o_full = f"{o_first} {o_last}".strip()
-                    # Match: full name, last name, or email prefix contains rep name parts
-                    if (rep_name_lower == o_full
-                            or rep_name_lower in o_full
-                            or o_full in rep_name_lower
-                            or rep_name_lower.split()[-1] == o_last
-                            or rep_name_lower.replace(" ", "") in o_email):
-                        owner_id = owner["id"]
-                        break
-            # Fallback: use first available owner
-            if not owner_id and results:
-                owner_id = results[0]["id"]
-                errors.append(f"Could not match '{rep_name}' to a HubSpot owner, using {results[0].get('email', 'first owner')}")
-        else:
-            errors.append(f"Owner lookup failed: {owners_resp.status_code}")
+        all_owners = []
+        after = None
+        for _ in range(5):  # max 1000 owners
+            params = {"limit": 200}
+            if after:
+                params["after"] = after
+            owners_resp = requests.get(
+                "https://api.hubapi.com/crm/v3/owners",
+                headers=headers, params=params, timeout=10
+            )
+            if owners_resp.status_code == 200:
+                page_data = owners_resp.json()
+                all_owners.extend(page_data.get("results", []))
+                paging = page_data.get("paging", {})
+                if paging and paging.get("next", {}).get("after"):
+                    after = paging["next"]["after"]
+                else:
+                    break
+            else:
+                errors.append(f"Owner lookup failed: {owners_resp.status_code}")
+                break
+        # Try to match by rep name (first+last, last name, or email prefix)
+        if rep_name_lower and all_owners:
+            for owner in all_owners:
+                o_first = (owner.get("firstName") or "").lower()
+                o_last = (owner.get("lastName") or "").lower()
+                o_email = (owner.get("email") or "").lower()
+                o_full = f"{o_first} {o_last}".strip()
+                if (rep_name_lower == o_full
+                        or rep_name_lower in o_full
+                        or o_full in rep_name_lower
+                        or rep_name_lower.split()[-1] == o_last
+                        or rep_name_lower.replace(" ", "") in o_email):
+                    owner_id = owner["id"]
+                    break
+        # Fallback: use first available owner
+        if not owner_id and all_owners:
+            owner_id = all_owners[0]["id"]
+            errors.append(f"Could not match '{rep_name}' to a HubSpot owner, using {all_owners[0].get('email', 'first owner')}")
     except Exception as e:
         errors.append(f"Owner lookup error: {e}")
+
+    # Fetch existing open PM Alert tasks to prevent duplicates
+    existing_subjects = set()
+    try:
+        search_resp = requests.post(
+            "https://api.hubapi.com/crm/v3/objects/tasks/search",
+            headers=headers,
+            json={
+                "filterGroups": [{
+                    "filters": [
+                        {"propertyName": "hs_task_subject", "operator": "CONTAINS_TOKEN", "value": "PM Alert"},
+                        {"propertyName": "hs_task_status", "operator": "NEQ", "value": "COMPLETED"},
+                    ]
+                }],
+                "properties": ["hs_task_subject"],
+                "limit": 200,
+            },
+            timeout=15,
+        )
+        if search_resp.status_code == 200:
+            for t in search_resp.json().get("results", []):
+                subj = (t.get("properties", {}).get("hs_task_subject") or "").strip().upper()
+                if subj:
+                    existing_subjects.add(subj)
+    except Exception:
+        pass  # If dupe check fails, proceed anyway
 
     for alert in alerts:
         try:
@@ -3112,6 +3153,11 @@ def push_alerts_to_hubspot(alerts, rep_name=""):
             model = alert.get("model", "")
             task_subject = f"PM Alert: {alert_type_label} - {customer} {model}".strip()
             task_body = alert.get("message", "Action needed on this PM deal.")
+
+            # Skip if an open task with the same subject already exists
+            if task_subject.strip().upper() in existing_subjects:
+                skipped += 1
+                continue
 
             # Due date = tomorrow at 9am
             due_ts = int((datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0).timestamp() * 1000)
@@ -3139,6 +3185,20 @@ def push_alerts_to_hubspot(alerts, rep_name=""):
                         f"https://api.hubapi.com/crm/v3/objects/tasks/{task_id}",
                         headers=headers, json={"properties": {"hubspot_owner_id": owner_id}}, timeout=10
                     )
+                # Step 3: Associate task to HubSpot company record
+                if task_id and hs_companies:
+                    cust_upper = customer.strip().upper()
+                    match = _match_hubspot_company(cust_upper, hs_companies)
+                    if match and match.get("hs_id"):
+                        try:
+                            requests.put(
+                                f"https://api.hubapi.com/crm/v4/objects/tasks/{task_id}/associations/companies/{match['hs_id']}",
+                                headers=headers,
+                                json=[{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 192}],
+                                timeout=10,
+                            )
+                        except Exception:
+                            pass
                 pushed += 1
             else:
                 err_detail = resp.text[:300] if resp.text else f"Status {resp.status_code}"
@@ -3154,7 +3214,7 @@ def push_alerts_to_hubspot(alerts, rep_name=""):
             except Exception:
                 pass
 
-    return pushed, errors
+    return pushed, skipped, errors
 
 @st.cache_data(ttl=86400)
 def setup_hubspot_pm_workflow():
@@ -4042,14 +4102,21 @@ with tab_tracker:
             def _push_alerts_fragment():
                 if tracker_alerts and st.button("Push Alerts to HubSpot", use_container_width=True, key="trk_push_alerts"):
                     with st.spinner("Creating HubSpot tasks and notifications..."):
-                        pushed, push_errors = push_alerts_to_hubspot(tracker_alerts, rep_name=st.session_state.get("rep_name", ""))
-                    st.session_state["hs_push_result"] = {"pushed": pushed, "errors": push_errors}
+                        pushed, skipped, push_errors = push_alerts_to_hubspot(
+                            tracker_alerts,
+                            rep_name=st.session_state.get("rep_name", ""),
+                            hs_companies=hs_companies,
+                        )
+                    st.session_state["hs_push_result"] = {"pushed": pushed, "skipped": skipped, "errors": push_errors}
 
                 # Show results from session state so they persist across reruns
                 hs_result = st.session_state.get("hs_push_result")
                 if hs_result:
                     if hs_result["pushed"] > 0:
-                        st.success(f"✅ Created {hs_result['pushed']} task{'s' if hs_result['pushed'] != 1 else ''} in HubSpot — check your Tasks queue")
+                        skip_msg = f" ({hs_result['skipped']} already existed)" if hs_result.get("skipped") else ""
+                        st.success(f"✅ Created {hs_result['pushed']} task{'s' if hs_result['pushed'] != 1 else ''} in HubSpot{skip_msg} — check your Tasks queue")
+                    elif hs_result.get("skipped", 0) > 0:
+                        st.info(f"All {hs_result['skipped']} alert{'s' if hs_result['skipped'] != 1 else ''} already have open tasks in HubSpot — no duplicates created")
                     else:
                         st.warning("⚠️ Could not push alerts. See details below.")
                     if hs_result.get("errors"):
