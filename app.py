@@ -1978,10 +1978,12 @@ def generate_pdf(quote_data):
     travel_cost = quote_data.get("travel_cost", 0)
     annual = quote_data.get("annual_pm_price", 0)
 
-    price_data = [["Service", "Hour Interval", "Qty", "Cost (Per)", "Subtotal"]]
+    price_data = [["Service", "Service Schedule (hrs)", "Qty", "Cost (Per)", "Subtotal"]]
     for iv in intervals:
+        marks = iv.get("hour_marks", [])
+        marks_str = ", ".join(f"{m:,}" for m in marks) if marks else f"{iv['hours']:,}"
         price_data.append([
-            iv["name"], f"{iv['hours']:,} hr", str(iv["qty"]),
+            iv["name"], marks_str, str(iv["qty"]),
             f"${iv['cost_per']:,.0f}", f"${iv['subtotal']:,.0f}",
         ])
     if travel_cost > 0:
@@ -2044,42 +2046,52 @@ def calculate_pm_cost(model_key, hours_requested):
     intervals = []
     total = 0
 
+    # Build sets of hour marks for each tier so we can compute net (non-overlapping) stops
+    hr_1_marks = set(range(ds["hr_1"], hours_requested + 1, ds["hr_1"])) if ds["hr_1"] else set()
+    hr_2_marks = set(range(ds["hr_2"], hours_requested + 1, ds["hr_2"])) if ds["hr_2"] else set()
+    hr_3_marks = set(range(ds["hr_3"], hours_requested + 1, ds["hr_3"])) if ds["hr_3"] else set()
+    hr_s_marks = set(range(ds["hr_s"], hours_requested + 1, ds["hr_s"])) if ds["hr_s"] else set()
+
     # Initial service (one-time)
     if ds["hr_i"] and ds["cost_i"]:
-        intervals.append({"name": "Initial Service", "hours": ds["hr_i"], "qty": 1, "cost_per": ds["cost_i"], "subtotal": ds["cost_i"]})
+        intervals.append({"name": "Initial Service", "hours": ds["hr_i"], "qty": 1, "cost_per": ds["cost_i"], "subtotal": ds["cost_i"],
+                          "hour_marks": [ds["hr_i"]]})
         total += ds["cost_i"]
 
     # Interval 1 (e.g. 250hr) - only some models have this
     if ds["hr_1"] and ds["cost_1"]:
-        # Count how many Interval 1 services occur, minus those covered by Interval 2
-        n1_total = hours_requested // ds["hr_1"] if ds["hr_1"] > 0 else 0
-        n2_total = hours_requested // ds["hr_2"] if ds["hr_2"] > 0 else 0
-        n1_net = max(n1_total - n2_total, 0)
+        net_1_marks = sorted(hr_1_marks - hr_2_marks)
+        n1_net = len(net_1_marks)
         if n1_net > 0:
-            intervals.append({"name": f"Interval 1 ({ds['hr_1']}hr)", "hours": ds["hr_1"], "qty": n1_net, "cost_per": ds["cost_1"], "subtotal": n1_net * ds["cost_1"]})
+            intervals.append({"name": f"Interval 1 ({ds['hr_1']}hr)", "hours": ds["hr_1"], "qty": n1_net, "cost_per": ds["cost_1"], "subtotal": n1_net * ds["cost_1"],
+                              "hour_marks": net_1_marks})
             total += n1_net * ds["cost_1"]
 
     # Interval 2 (typically 500hr)
     if ds["hr_2"] and ds["cost_2"]:
-        n2_total = hours_requested // ds["hr_2"] if ds["hr_2"] > 0 else 0
-        n3_total = hours_requested // ds["hr_3"] if ds["hr_3"] > 0 else 0
-        n2_net = max(n2_total - n3_total, 0)
+        net_2_marks = sorted(hr_2_marks - hr_3_marks)
+        n2_net = len(net_2_marks)
         if n2_net > 0:
-            intervals.append({"name": f"Interval 2 ({ds['hr_2']}hr)", "hours": ds["hr_2"], "qty": n2_net, "cost_per": ds["cost_2"], "subtotal": n2_net * ds["cost_2"]})
+            intervals.append({"name": f"Interval 2 ({ds['hr_2']}hr)", "hours": ds["hr_2"], "qty": n2_net, "cost_per": ds["cost_2"], "subtotal": n2_net * ds["cost_2"],
+                              "hour_marks": net_2_marks})
             total += n2_net * ds["cost_2"]
 
     # Interval 3 (typically 1000hr)
     if ds["hr_3"] and ds["cost_3"]:
-        n3_total = hours_requested // ds["hr_3"] if ds["hr_3"] > 0 else 0
+        net_3_marks = sorted(hr_3_marks)
+        n3_total = len(net_3_marks)
         if n3_total > 0:
-            intervals.append({"name": f"Interval 3 ({ds['hr_3']}hr)", "hours": ds["hr_3"], "qty": n3_total, "cost_per": ds["cost_3"], "subtotal": n3_total * ds["cost_3"]})
+            intervals.append({"name": f"Interval 3 ({ds['hr_3']}hr)", "hours": ds["hr_3"], "qty": n3_total, "cost_per": ds["cost_3"], "subtotal": n3_total * ds["cost_3"],
+                              "hour_marks": net_3_marks})
             total += n3_total * ds["cost_3"]
 
     # Specialty service (at specific hour mark)
     if ds["hr_s"] and ds["cost_s"]:
-        n_s = hours_requested // ds["hr_s"] if ds["hr_s"] > 0 else 0
+        net_s_marks = sorted(hr_s_marks)
+        n_s = len(net_s_marks)
         if n_s > 0:
-            intervals.append({"name": f"Specialty ({ds['hr_s']}hr)", "hours": ds["hr_s"], "qty": n_s, "cost_per": ds["cost_s"], "subtotal": n_s * ds["cost_s"]})
+            intervals.append({"name": f"Specialty ({ds['hr_s']}hr)", "hours": ds["hr_s"], "qty": n_s, "cost_per": ds["cost_s"], "subtotal": n_s * ds["cost_s"],
+                              "hour_marks": net_s_marks})
             total += n_s * ds["cost_s"]
 
     return {
@@ -3908,10 +3920,20 @@ with tab_leads:
                                     if q_included:
                                         interval_rows = []
                                         for iv in q_included:
+                                            marks = iv.get("hour_marks", [])
+                                            marks_str = ", ".join(f"{m:,}" for m in marks) if marks else f"{iv['hours']:,}"
                                             interval_rows.append({
-                                                "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
+                                                "Service": iv["name"], "Service Schedule (hrs)": marks_str,
                                                 "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
                                                 "Subtotal": f"${iv['subtotal']:,.0f}",
+                                            })
+                                        # Add misc items to the table
+                                        for mi in st.session_state.get(misc_key, []):
+                                            sign = "+" if mi["amount"] >= 0 else "-"
+                                            interval_rows.append({
+                                                "Service": mi["desc"], "Service Schedule (hrs)": "—",
+                                                "Qty": "—", "Cost (Per)": "—",
+                                                "Subtotal": f"{sign}${abs(mi['amount']):,.0f}",
                                             })
                                         st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
 
@@ -4333,10 +4355,20 @@ with tab_calc:
             if included_intervals:
                 interval_rows = []
                 for iv in included_intervals:
+                    marks = iv.get("hour_marks", [])
+                    marks_str = ", ".join(f"{m:,}" for m in marks) if marks else f"{iv['hours']:,}"
                     interval_rows.append({
-                        "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
+                        "Service": iv["name"], "Service Schedule (hrs)": marks_str,
                         "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
                         "Subtotal": f"${iv['subtotal']:,.0f}",
+                    })
+                # Add misc items to the table
+                for mi in st.session_state.get("misc_items", []):
+                    sign = "+" if mi["amount"] >= 0 else "-"
+                    interval_rows.append({
+                        "Service": mi["desc"], "Service Schedule (hrs)": "—",
+                        "Qty": "—", "Cost (Per)": "—",
+                        "Subtotal": f"{sign}${abs(mi['amount']):,.0f}",
                     })
                 st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
 
