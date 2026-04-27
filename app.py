@@ -4394,11 +4394,29 @@ with tab_calc:
 # TAB 4: QUOTE HISTORY
 # ═══════════════════════════════════════════════════════════
 with tab_history:
-    st.subheader("Quote History & Tracking")
+    st.subheader("Quote History")
     df = load_quotes_from_sheet()
     if df.empty:
         st.info("No quotes saved yet. Use the calculator to create and save quotes.")
     else:
+        # Clean column names — remove underscores, capitalize properly
+        display_col_map = {
+            "date": "Date",
+            "customer_name": "Customer",
+            "branch": "Branch",
+            "rep": "Rep",
+            "service_type": "Service Type",
+            "make": "Make",
+            "model": "Model",
+            "serial": "Serial",
+            "hours_requested": "Hours Requested",
+            "travel_time": "Travel Time",
+            "travel_cost": "Travel Cost",
+            "total_cost": "Total Cost",
+            "annual_pm_price": "PM Contract Price",
+            "notes": "Notes",
+        }
+        # Rename for display but keep originals for filtering
         col1, col2, col3 = st.columns(3)
         with col1:
             fb = st.multiselect("Branch", sorted(df["branch"].unique()) if "branch" in df.columns else [])
@@ -4413,26 +4431,41 @@ with tab_history:
         if fm: filt = filt[filt["make"].isin(fm)]
 
         if not filt.empty and "annual_pm_price" in filt.columns:
+            filt["annual_pm_price"] = pd.to_numeric(filt["annual_pm_price"], errors="coerce").fillna(0)
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Quotes", len(filt))
             with c2: st.metric("Total Value", f"${filt['annual_pm_price'].sum():,.0f}")
             with c3: st.metric("Avg Value", f"${filt['annual_pm_price'].mean():,.0f}")
 
-        st.dataframe(filt, use_container_width=True, hide_index=True)
+        # Display with clean column names
+        display_df = filt.rename(columns={k: v for k, v in display_col_map.items() if k in filt.columns})
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         if len(filt) > 1:
             import plotly.express as px
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 if "branch" in filt.columns:
                     bd = filt.groupby("branch")["annual_pm_price"].sum().reset_index()
-                    fig = px.bar(bd, x="branch", y="annual_pm_price", title="By Branch", color_discrete_sequence=[SEC_RED])
+                    fig = px.bar(bd, x="branch", y="annual_pm_price", title="Quote Value by Branch",
+                                 labels={"branch": "Branch", "annual_pm_price": "PM Contract Value ($)"},
+                                 color_discrete_sequence=[SEC_RED])
                     fig.update_layout(showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
             with col2:
                 if "make" in filt.columns:
                     md = filt.groupby("make")["annual_pm_price"].sum().reset_index()
-                    fig = px.bar(md, x="make", y="annual_pm_price", title="By Make", color_discrete_sequence=["#2F5496"])
+                    fig = px.bar(md, x="make", y="annual_pm_price", title="Quote Value by Make",
+                                 labels={"make": "Make", "annual_pm_price": "PM Contract Value ($)"},
+                                 color_discrete_sequence=["#2F5496"])
+                    fig.update_layout(showlegend=False, xaxis_tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
+            with col3:
+                if "rep" in filt.columns:
+                    rd = filt.groupby("rep")["annual_pm_price"].sum().reset_index()
+                    fig = px.bar(rd, x="rep", y="annual_pm_price", title="Quote Value by Rep",
+                                 labels={"rep": "Rep", "annual_pm_price": "PM Contract Value ($)"},
+                                 color_discrete_sequence=["#1B7340"])
                     fig.update_layout(showlegend=False, xaxis_tickangle=-45)
                     st.plotly_chart(fig, use_container_width=True)
 
