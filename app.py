@@ -1986,6 +1986,11 @@ def generate_pdf(quote_data):
         ])
     if travel_cost > 0:
         price_data.append(["Travel", "", "", "", f"${travel_cost:,.0f}"])
+    # Add misc items to PDF
+    misc_items = quote_data.get("misc_items", [])
+    for mi in misc_items:
+        sign = "+" if mi["amount"] >= 0 else "-"
+        price_data.append([f"{mi['desc']}", "", "", "", f"{sign}${abs(mi['amount']):,.0f}"])
     price_data.append(["", "", "", "", ""])
     price_data.append(["PM Contract Total", "", "", "", f"${annual:,.0f}"])
 
@@ -2641,6 +2646,19 @@ def update_pm_tracker_row(row_index, updates):
             if col_name in headers:
                 col_idx = headers.index(col_name) + 1  # 1-based
                 ws.update_cell(sheet_row, col_idx, value)
+        return True
+    except Exception:
+        return False
+
+def delete_pm_tracker_row(row_index):
+    """Delete a row from the PM Tracker sheet.
+    row_index is 0-based data row (header = row 1, first data = row 2)."""
+    ws = get_pm_tracker_sheet()
+    if ws is None:
+        return False
+    try:
+        sheet_row = row_index + 2  # +1 for header, +1 for 1-based
+        ws.delete_rows(sheet_row)
         return True
     except Exception:
         return False
@@ -3828,22 +3846,67 @@ with tab_leads:
                                     }
 
                             quote_key = f"quote_{cust_key}"
+                            misc_key = f"misc_{cust_key}"
                             if quote_key in st.session_state and st.session_state[quote_key]:
                                 q = st.session_state[quote_key]
                                 st.divider()
+
+                                # Show intervals with checkboxes to include/exclude
+                                q_adjusted = 0
                                 if "intervals" in q and q["intervals"]:
-                                    interval_rows = []
-                                    for iv in q["intervals"]:
-                                        interval_rows.append({
-                                            "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
-                                            "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
-                                            "Subtotal": f"${iv['subtotal']:,.0f}",
-                                        })
-                                    st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+                                    st.caption("Uncheck services to remove from quote:")
+                                    q_included = []
+                                    for qi, iv in enumerate(q["intervals"]):
+                                        inc = st.checkbox(
+                                            f"{iv['name']} — {iv['qty']}x @ ${iv['cost_per']:,.0f} = **${iv['subtotal']:,.0f}**",
+                                            value=True, key=f"qiv_{cust_key}_{qi}"
+                                        )
+                                        if inc:
+                                            q_included.append(iv)
+                                            q_adjusted += iv["subtotal"]
+                                    if q_included:
+                                        interval_rows = []
+                                        for iv in q_included:
+                                            interval_rows.append({
+                                                "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
+                                                "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
+                                                "Subtotal": f"${iv['subtotal']:,.0f}",
+                                            })
+                                        st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+
+                                # Misc charges
+                                if misc_key not in st.session_state:
+                                    st.session_state[misc_key] = []
+                                mi1, mi2, mi3 = st.columns([2, 1, 1])
+                                with mi1:
+                                    q_misc_desc = st.text_input("Misc item", key=f"qmd_{cust_key}", placeholder="e.g. Mileage")
+                                with mi2:
+                                    q_misc_amt = st.number_input("Amount ($)", min_value=-50000, max_value=50000, value=0, step=50, key=f"qma_{cust_key}")
+                                with mi3:
+                                    st.markdown("<br>", unsafe_allow_html=True)
+                                    if st.button("Add", key=f"qmb_{cust_key}", use_container_width=True):
+                                        if q_misc_desc.strip() and q_misc_amt != 0:
+                                            st.session_state[misc_key].append({"desc": q_misc_desc.strip(), "amount": q_misc_amt})
+                                            st.rerun()
+                                q_misc_total = 0
+                                for mi_i, mi in enumerate(st.session_state[misc_key]):
+                                    mc1, _, mc3 = st.columns([3, 1, 1])
+                                    with mc1:
+                                        sign = "+" if mi["amount"] >= 0 else "-"
+                                        st.markdown(f"{sign} {mi['desc']}: **${abs(mi['amount']):,.0f}**")
+                                    with mc3:
+                                        if st.button("Remove", key=f"qmr_{cust_key}_{mi_i}"):
+                                            st.session_state[misc_key].pop(mi_i)
+                                            st.rerun()
+                                    q_misc_total += mi["amount"]
+
                                 t_cost = q.get("travel_cost", 0)
                                 if t_cost > 0:
                                     st.markdown(f"**Travel:** ${t_cost:,.0f}")
-                                st.markdown(f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;"><div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div><div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q["annual_pm_price"]:,.0f}</div></div>', unsafe_allow_html=True)
+                                q_final = q_adjusted + t_cost + q_misc_total
+                                q["annual_pm_price"] = q_final
+                                q["misc_items"] = st.session_state[misc_key].copy()
+                                st.markdown(f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;"><div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div><div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q_final:,.0f}</div></div>', unsafe_allow_html=True)
 
                                 rc1, rc2, rc3 = st.columns(3)
                                 with rc1:
@@ -3860,7 +3923,7 @@ with tab_leads:
                                             "customer": cust_name, "branch": st.session_state.get("branch_name", ""),
                                             "rep": q.get("rep", ""), "make": q.get("make", ""), "model": q.get("model", ""),
                                             "serial": q.get("serial", ""), "eng_hours": q.get("machine_hours", 0),
-                                            "contract_value": q.get("annual_pm_price", 0), "status": "Quoted", "notes": q.get("notes", ""),
+                                            "contract_value": q_final, "status": "Quoted", "notes": q.get("notes", ""),
                                         }
                                         save_pm_tracker_entry(pm_entry)
                                         hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
@@ -4061,35 +4124,52 @@ with tab_tracker:
                     with uc2:
                         new_hours = st.number_input("Current Hours", min_value=0, max_value=30000, value=t_hours, step=100, key=f"{t_row_key}_hrs")
                     with uc3:
-                        new_notes = st.text_input("Notes", value=t_notes if t_notes != "nan" else "", key=f"{t_row_key}_notes")
+                        new_value = st.number_input("Contract Value ($)", min_value=0, max_value=500000, value=int(t_value), step=100, key=f"{t_row_key}_val")
+                    new_notes = st.text_input("Notes", value=t_notes if t_notes != "nan" else "", key=f"{t_row_key}_notes")
 
-                    if st.button("Save Update", key=f"{t_row_key}_save", type="primary"):
-                        # Keep existing next PM due — don't recalculate.
-                        # The alert engine compares current hours vs next PM to detect overdue.
-                        # Next PM only advances when the rep manually marks the PM as completed.
-
-                        updates = {
-                            "Status": new_status,
-                            "Eng Hours at Deal": new_hours,
-                            "Notes": new_notes,
-                            "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
-                            "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
-                        }
-                        if update_pm_tracker_row(idx, updates):
-                            # Sync to HubSpot PM pipeline
-                            hs_data = {
-                                "customer": t_cust,
-                                "model": t_model,
-                                "serial": t_serial,
-                                "status": new_status,
-                                "contract_value": t_value,
-                                "eng_hours": new_hours,
+                    ub1, ub2 = st.columns(2)
+                    with ub1:
+                        if st.button("Save Update", key=f"{t_row_key}_save", type="primary", use_container_width=True):
+                            updates = {
+                                "Status": new_status,
+                                "Eng Hours at Deal": new_hours,
+                                "Contract Value": new_value,
+                                "Notes": new_notes,
+                                "Last Contact Date": datetime.now().strftime("%m/%d/%Y"),
+                                "Hours Updated": datetime.now().strftime("%m/%d/%Y"),
                             }
-                            hs_id = hubspot_create_or_update_pm_deal(hs_data)
-                            st.success(f"Updated {t_cust} to {new_status}" + (" (synced to HubSpot)" if hs_id else ""))
-                            st.rerun()
-                        else:
-                            st.warning("Could not save update. Check Google Sheets connection.")
+                            if update_pm_tracker_row(idx, updates):
+                                hs_data = {
+                                    "customer": t_cust,
+                                    "model": t_model,
+                                    "serial": t_serial,
+                                    "status": new_status,
+                                    "contract_value": new_value,
+                                    "eng_hours": new_hours,
+                                }
+                                hs_id = hubspot_create_or_update_pm_deal(hs_data)
+                                st.success(f"Updated {t_cust} to {new_status}" + (" (synced to HubSpot)" if hs_id else ""))
+                                st.rerun()
+                            else:
+                                st.warning("Could not save update. Check Google Sheets connection.")
+                    with ub2:
+                        if st.button("Remove from Tracker", key=f"{t_row_key}_del", use_container_width=True):
+                            st.session_state[f"confirm_del_{t_row_key}"] = True
+                    if st.session_state.get(f"confirm_del_{t_row_key}"):
+                        st.warning(f"Remove **{t_cust} - {t_model}** from PM Tracker?")
+                        cd1, cd2 = st.columns(2)
+                        with cd1:
+                            if st.button("Yes, Remove", key=f"{t_row_key}_del_yes", type="primary", use_container_width=True):
+                                if delete_pm_tracker_row(idx):
+                                    st.success(f"Removed {t_cust} - {t_model} from tracker")
+                                    st.session_state.pop(f"confirm_del_{t_row_key}", None)
+                                    st.rerun()
+                                else:
+                                    st.error("Could not remove. Check Google Sheets connection.")
+                        with cd2:
+                            if st.button("Cancel", key=f"{t_row_key}_del_no", use_container_width=True):
+                                st.session_state.pop(f"confirm_del_{t_row_key}", None)
+                                st.rerun()
 
         # Export and actions
         st.divider()
@@ -4210,27 +4290,72 @@ with tab_calc:
         st.divider()
         st.subheader("PM Contract Pricing")
 
+        # Show interval breakdown with checkboxes to include/exclude each service
+        adjusted_total = 0
         if "intervals" in q and q["intervals"]:
-            interval_rows = []
-            for iv in q["intervals"]:
-                interval_rows.append({
-                    "Service": iv["name"],
-                    "Hour Interval": f"{iv['hours']:,} hr",
-                    "Qty": iv["qty"],
-                    "Cost (Per)": f"${iv['cost_per']:,.0f}",
-                    "Subtotal": f"${iv['subtotal']:,.0f}",
-                })
-            st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+            st.caption("Uncheck any services you want to remove from this quote:")
+            included_intervals = []
+            for i, iv in enumerate(q["intervals"]):
+                include = st.checkbox(
+                    f"{iv['name']} — {iv['qty']}x @ ${iv['cost_per']:,.0f} = **${iv['subtotal']:,.0f}**",
+                    value=True, key=f"calc_iv_{i}"
+                )
+                if include:
+                    included_intervals.append(iv)
+                    adjusted_total += iv["subtotal"]
+            if included_intervals:
+                interval_rows = []
+                for iv in included_intervals:
+                    interval_rows.append({
+                        "Service": iv["name"], "Hour Interval": f"{iv['hours']:,} hr",
+                        "Qty": iv["qty"], "Cost (Per)": f"${iv['cost_per']:,.0f}",
+                        "Subtotal": f"${iv['subtotal']:,.0f}",
+                    })
+                st.dataframe(pd.DataFrame(interval_rows), use_container_width=True, hide_index=True)
+
+        # Miscellaneous add-ons
+        st.markdown("**Miscellaneous Charges**")
+        st.caption("Add items like mileage, filters, fluids, or other custom charges.")
+        if "misc_items" not in st.session_state:
+            st.session_state.misc_items = []
+        mi1, mi2, mi3 = st.columns([2, 1, 1])
+        with mi1:
+            misc_desc = st.text_input("Description", key="calc_misc_desc", placeholder="e.g. Mileage, Extra filters")
+        with mi2:
+            misc_amt = st.number_input("Amount ($)", min_value=-50000, max_value=50000, value=0, step=50, key="calc_misc_amt")
+        with mi3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Add", key="calc_misc_add", use_container_width=True):
+                if misc_desc.strip() and misc_amt != 0:
+                    st.session_state.misc_items.append({"desc": misc_desc.strip(), "amount": misc_amt})
+                    st.rerun()
+        misc_total = 0
+        if st.session_state.misc_items:
+            for mi_idx, mi in enumerate(st.session_state.misc_items):
+                mc1, mc2, mc3 = st.columns([3, 1, 1])
+                with mc1:
+                    sign = "+" if mi["amount"] >= 0 else "-"
+                    st.markdown(f"{sign} {mi['desc']}: **${abs(mi['amount']):,.0f}**")
+                with mc3:
+                    if st.button("Remove", key=f"calc_mi_rm_{mi_idx}"):
+                        st.session_state.misc_items.pop(mi_idx)
+                        st.rerun()
+                misc_total += mi["amount"]
 
         calc_tc = q.get("travel_cost", 0)
         if calc_tc > 0:
             st.markdown(f"**Travel:** ${calc_tc:,.0f}")
 
+        final_price = adjusted_total + calc_tc + misc_total
         st.markdown(
             f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;">'
             f'<div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div>'
-            f'<div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q["annual_pm_price"]:,.0f}</div>'
+            f'<div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${final_price:,.0f}</div>'
             f'</div>', unsafe_allow_html=True)
+
+        # Update the quote with adjusted price for saving/PDF
+        q["annual_pm_price"] = final_price
+        q["misc_items"] = st.session_state.misc_items.copy()
 
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
@@ -4251,7 +4376,7 @@ with tab_calc:
                     "model": calc_model,
                     "serial": calc_serial,
                     "eng_hours": calc_machine_hrs,
-                    "contract_value": q.get("annual_pm_price", 0),
+                    "contract_value": final_price,
                     "status": "Quoted",
                     "notes": calc_notes,
                 }
@@ -4261,6 +4386,7 @@ with tab_calc:
         with rc3:
             if st.button("Clear / New Quote", use_container_width=True, key="calc_clear"):
                 st.session_state.current_quote = {}
+                st.session_state.misc_items = []
                 st.rerun()
 
 
