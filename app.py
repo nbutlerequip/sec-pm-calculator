@@ -573,7 +573,7 @@ def fetch_hubspot_companies():
             "last_parts_purchase", "last_parts_invoice_date__c",
             "sa_ytd_charges__c", "oe_ytd_charges__c",
             "phone", "domain",
-            "account_number", "account_number__c", "case_account_number",
+            "customer_number__c", "bill_to_customer_number__c", "customer_number_uid",
             "hs_email", "email", "primary_contact_name",
         ]),
     }
@@ -613,7 +613,7 @@ def fetch_hubspot_companies():
                         "description": props.get("description", ""),
                         "phone": props.get("phone", ""),
                         "domain": props.get("domain", ""),
-                        "account_number": (props.get("account_number") or props.get("account_number__c") or props.get("case_account_number") or ""),
+                        "account_number": (props.get("customer_number__c") or props.get("bill_to_customer_number__c") or props.get("customer_number_uid") or ""),
                         "email": (props.get("hs_email") or props.get("email") or ""),
                         "contact_name": (props.get("primary_contact_name") or ""),
                     }
