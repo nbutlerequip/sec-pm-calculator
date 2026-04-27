@@ -3447,9 +3447,32 @@ with tab_leads:
         if not procare_detail.empty:
             procare_expiring = build_procare_expiring_leads(procare_detail)
             if not procare_expiring.empty:
-                procare_expiring["Customer"] = procare_expiring.apply(
-                    lambda r: f"ProCare Machine - {r.get('Model', 'Unknown')} ({r.get('Location', 'Unknown')})"
-                    if not r.get("Customer") else r["Customer"], axis=1)
+                # Build VIN→Customer Name mapping from full (unfiltered) equipment report
+                vin_customer_map = {}
+                try:
+                    for pattern in ["equipment_report.xlsx", "KJ*EQUIPMENT*REPORT*.xlsx"]:
+                        eq_files = sorted(DATA_DIR.glob(pattern))
+                        if eq_files:
+                            eq_full = pd.read_excel(eq_files[-1], sheet_name="Sheet2", header=0)
+                            if "EM3_SERIAL" in eq_full.columns and "Customer Name" in eq_full.columns:
+                                for _, erow in eq_full.iterrows():
+                                    serial = str(erow.get("EM3_SERIAL", "") or "").strip()
+                                    cname = str(erow.get("Customer Name", "") or "").strip()
+                                    if serial and cname and cname.lower() not in ("nan", "none", ""):
+                                        vin_customer_map[serial] = cname
+                            break
+                except Exception:
+                    pass
+
+                # Assign customer names from VIN mapping, fall back to model/location label
+                def _resolve_procare_customer(r):
+                    vin = str(r.get("VIN", "") or "").strip()
+                    if vin and vin in vin_customer_map:
+                        return vin_customer_map[vin]
+                    if r.get("Customer"):
+                        return r["Customer"]
+                    return f"ProCare Machine - {r.get('Model', 'Unknown')} ({r.get('Location', 'Unknown')})"
+                procare_expiring["Customer"] = procare_expiring.apply(_resolve_procare_customer, axis=1)
 
     # Combine all sources
     sources = []
@@ -4191,7 +4214,7 @@ with tab_tracker:
 
         # Export and actions
         st.divider()
-        exp1, exp2, exp3 = st.columns(3)
+        exp1, exp2 = st.columns(2)
         with exp1:
             csv = t_display.to_csv(index=False).encode("utf-8")
             st.download_button("Export PM Deals (CSV)", data=csv, file_name=f"SEC_PM_Tracker_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True, key="trk_export")
@@ -4222,21 +4245,6 @@ with tab_tracker:
                             for err in hs_result["errors"]:
                                 st.code(err)
             _push_alerts_fragment()
-        with exp3:
-            @st.fragment
-            def _setup_hs_fragment():
-                if st.button("Setup HubSpot Alerts", use_container_width=True, key="trk_setup_hs"):
-                    with st.spinner("Setting up PM alert properties and workflow in HubSpot..."):
-                        success, msg = setup_hubspot_pm_workflow()
-                    if success:
-                        st.success(f"HubSpot setup complete: {msg}")
-                    else:
-                        st.warning(msg)
-                        st.caption("Manual setup: In HubSpot go to Automation > Workflows > Create deal-based workflow. "
-                                  "Trigger: deal property 'PM Alert Active' is 'Yes'. "
-                                  "Action: Send internal notification to deal owner. "
-                                  "Use {{deal.pm_alert_message}} in the notification body.")
-            _setup_hs_fragment()
 
 
 # ═══════════════════════════════════════════════════════════
