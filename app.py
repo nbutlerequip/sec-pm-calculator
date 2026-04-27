@@ -52,6 +52,7 @@ PM_DEALSHEET = {
     "CX19D Cab": {"brand":"Case","cost_i":518,"cost_1":0,"cost_2":1207,"cost_3":2166,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
     "CX30D Cab": {"brand":"Case","cost_i":760,"cost_1":485,"cost_2":1175,"cost_3":2040,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
     "CX34D Cab": {"brand":"Case","cost_i":760,"cost_1":485,"cost_2":1175,"cost_3":2040,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
+    "CX37C": {"brand":"Case","cost_i":550,"cost_1":0,"cost_2":755,"cost_3":1200,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
     "CX38D Cab": {"brand":"Case","cost_i":825,"cost_1":550,"cost_2":1235,"cost_3":2105,"cost_s":0,"hr_i":100,"hr_1":250,"hr_2":500,"hr_3":1000,"hr_s":0},
     "CX42D Cab": {"brand":"Case","cost_i":890,"cost_1":0,"cost_2":1360,"cost_3":2280,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
     "CX50D Cab": {"brand":"Case","cost_i":820,"cost_1":0,"cost_2":1395,"cost_3":2800,"cost_s":0,"hr_i":100,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
