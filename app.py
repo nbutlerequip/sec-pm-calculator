@@ -3918,14 +3918,15 @@ with tab_leads:
                                 # Misc charges
                                 if misc_key not in st.session_state:
                                     st.session_state[misc_key] = []
+                                st.markdown("**Miscellaneous Charges**")
                                 mi1, mi2, mi3 = st.columns([2, 1, 1])
                                 with mi1:
-                                    q_misc_desc = st.text_input("Misc item", key=f"qmd_{cust_key}", placeholder="e.g. Mileage")
+                                    q_misc_desc = st.text_input("Misc item", key=f"qmisc_desc_{cust_key}", placeholder="e.g. Mileage")
                                 with mi2:
-                                    q_misc_amt = st.number_input("Amount ($)", min_value=-50000, max_value=50000, value=0, step=50, key=f"qma_{cust_key}")
+                                    q_misc_amt = st.number_input("Amount ($)", min_value=-50000, max_value=50000, value=0, step=50, key=f"qmisc_amt_{cust_key}")
                                 with mi3:
                                     st.markdown("<br>", unsafe_allow_html=True)
-                                    if st.button("Add", key=f"qmb_{cust_key}", use_container_width=True):
+                                    if st.button("Add", key=f"qmisc_add_{cust_key}", use_container_width=True):
                                         if q_misc_desc.strip() and q_misc_amt != 0:
                                             st.session_state[misc_key].append({"desc": q_misc_desc.strip(), "amount": q_misc_amt})
                                             st.rerun()
