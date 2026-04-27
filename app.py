@@ -385,6 +385,15 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
         machines = len(grp)
         brands = grp["Brand"].unique().tolist()
         models = grp["EM2_MODEL"].unique().tolist()
+        # Build make+model combos for display (e.g. "Case 580SN")
+        make_models = []
+        for _, eqrow in grp.iterrows():
+            brand = str(eqrow.get("Brand", "") or "").strip()
+            emodel = str(eqrow.get("EM2_MODEL", "") or "").strip()
+            if emodel:
+                combo = f"{brand} {emodel}".strip() if brand else emodel
+                if combo not in make_models:
+                    make_models.append(combo)
         total_sell = grp["Sell Price"].sum()
         total_ps = grp["Parts and Service $"].sum()
         max_meter = grp["EM_METER"].max()
@@ -533,7 +542,7 @@ def build_equipment_report_leads(equip_df, existing_customers, branch_map=None):
             "is_internal": False,
             "Equip Machines": machines,
             "Equip Brands": ", ".join(brands),
-            "Equip Models": ", ".join(models[:10]),
+            "Equip Models": ", ".join(make_models[:10]),
             "Equip Total Sold": total_sell,
         })
 
@@ -3538,17 +3547,21 @@ with tab_leads:
                     cust_name = row["Customer"]
                     cust_name_safe = html_module.escape(str(cust_name))
 
-                    # Build machine list — combine Model column with Equip Models for full fleet
+                    # Build machine list — combine Make+Model for full fleet display
                     machines_str = ""
                     cust_machines = display[display["Customer"] == cust_name]
                     all_models = set()
                     if not cust_machines.empty:
-                        # Get individual Model values (one per row, from CASE alerts)
+                        # Get individual Make+Model values (from CASE alerts — all are Case brand)
                         if "Model" in cust_machines.columns:
                             for m in cust_machines["Model"]:
-                                if m and str(m).strip() and str(m).strip().lower() not in ("nan", "none", ""):
-                                    all_models.add(str(m).strip())
-                        # Also pull from Equip Models (comma-separated full fleet from equipment report)
+                                m = str(m or "").strip()
+                                if m and m.lower() not in ("nan", "none", ""):
+                                    # CASE alerts are all Case brand; prefix if not already
+                                    if not any(m.upper().startswith(b) for b in ("CASE ", "KOBELCO ", "BOMAG ", "DEVELON ")):
+                                        m = f"Case {m}"
+                                    all_models.add(m)
+                        # Also pull from Equip Models (already has make+model combos from equipment report)
                         if "Equip Models" in cust_machines.columns:
                             for em in cust_machines["Equip Models"]:
                                 if em and str(em).strip() and str(em).strip().lower() not in ("nan", "none", ""):
