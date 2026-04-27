@@ -3599,15 +3599,33 @@ with tab_leads:
                 st.info("No customers match filters.")
             else:
                 # Export buttons
+                # Clean column names for export — no underscores
+                export_col_map = {
+                    "location": "Location", "lead_category": "Lead Category",
+                    "fleet": "Fleet", "total_parts_value": "Parts Value",
+                    "total_annual_pm": "PM Value", "total_labor_hrs": "Labor Hours",
+                    "avg_hours": "Avg Engine Hours", "avg_score": "Avg Score",
+                    "max_score": "Max Score", "models": "Models",
+                    "dealsheet_models": "Dealsheet Models", "case_class": "CASE Class",
+                    "in_hubspot": "In HubSpot", "has_pm": "Has PM",
+                    "hs_deals": "HubSpot Deals", "service_status": "Service Status",
+                    "source": "Source", "ytd_parts": "YTD Parts",
+                    "ytd_service": "YTD Service", "total_spend": "Total Spend",
+                    "next_pm_hrs": "Next PM Hours", "phone": "Phone",
+                    "account_number": "Account Number", "email": "Email",
+                    "contact_name": "Contact Name", "machines": "Machines",
+                }
                 col_exp1, col_exp2, _ = st.columns([1, 1, 3])
                 with col_exp1:
-                    exp_cols = [c for c in ["Customer", "location", "lead_category", "fleet", "total_parts_value", "total_annual_pm", "Customer Score"] if c in cust_display.columns]
-                    csv_data = cust_display[exp_cols].to_csv(index=False).encode("utf-8")
+                    exp_cols = [c for c in ["Customer", "location", "lead_category", "fleet", "total_parts_value", "total_annual_pm", "Customer Score", "phone", "account_number", "email", "contact_name"] if c in cust_display.columns]
+                    exp_df = cust_display[exp_cols].rename(columns=export_col_map)
+                    csv_data = exp_df.to_csv(index=False).encode("utf-8")
                     st.download_button("Export Customers (CSV)", data=csv_data,
                         file_name=f"SEC_PM_Customers_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv", use_container_width=True)
                 with col_exp2:
-                    full_csv = display.to_csv(index=False).encode("utf-8")
+                    full_exp = display.rename(columns=export_col_map)
+                    full_csv = full_exp.to_csv(index=False).encode("utf-8")
                     st.download_button("Export All Data (CSV)", data=full_csv,
                         file_name=f"SEC_PM_Full_Data_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv", use_container_width=True)
