@@ -3336,6 +3336,21 @@ with tab_leads:
             existing_equip.update(hs_only_leads["Customer"].str.strip().str.upper())
         equip_leads = build_equipment_report_leads(equip_df, existing_equip, equip_branch_map)
 
+        # Enrich equipment leads with HubSpot contact info (phone, account number, email, contact name)
+        if not equip_leads.empty and hs_companies:
+            eq_phones, eq_accts, eq_emails, eq_contacts = [], [], [], []
+            for _, erow in equip_leads.iterrows():
+                cust_upper = str(erow["Customer"]).strip().upper()
+                match = _match_hubspot_company(cust_upper, hs_companies)
+                eq_phones.append(match.get("phone", "") if match else "")
+                eq_accts.append(match.get("account_number", "") if match else "")
+                eq_emails.append(match.get("email", "") if match else "")
+                eq_contacts.append(match.get("contact_name", "") if match else "")
+            equip_leads["Phone"] = eq_phones
+            equip_leads["Account Number"] = eq_accts
+            equip_leads["Email"] = eq_emails
+            equip_leads["Contact Name"] = eq_contacts
+
     # ProCare expiring leads
     procare_expiring = pd.DataFrame()
     procare_files = sorted(DATA_DIR.glob("procare.xlsx")) or sorted(DATA_DIR.glob("Southeastern ProCare Stops*.xlsx"))
