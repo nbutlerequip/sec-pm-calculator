@@ -2858,6 +2858,68 @@ def hubspot_create_or_update_pm_deal(deal_data):
     except Exception:
         return None
 
+def _attach_quote_note_to_deal(deal_id, quote_data):
+    """Create a HubSpot note on the deal with full quote breakdown."""
+    if not HUBSPOT_TOKEN or not deal_id:
+        return
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    try:
+        # Build the note body with quote details
+        lines = []
+        lines.append(f"PM QUOTE — {quote_data.get('customer_name', '')} — {quote_data.get('make', '')} {quote_data.get('model', '')}")
+        lines.append(f"Date: {quote_data.get('date', '')}")
+        lines.append(f"Rep: {quote_data.get('rep', '')}")
+        lines.append(f"Branch: {quote_data.get('branch', '')}")
+        lines.append(f"Service Type: {quote_data.get('service_type', '')}")
+        lines.append(f"Serial: {quote_data.get('serial', 'N/A')}")
+        lines.append(f"Machine Hours: {quote_data.get('machine_hours', 0):,}")
+        lines.append(f"Hours Requested: {quote_data.get('hours_requested', 0):,}")
+        lines.append("")
+        lines.append("SERVICE SCHEDULE:")
+        schedule = quote_data.get("schedule", [])
+        if schedule:
+            for stop in schedule:
+                lines.append(f"  {stop['hour_mark']:,} hrs — {stop['services']} — ${stop['cost']:,.0f}")
+        else:
+            for iv in quote_data.get("intervals", []):
+                lines.append(f"  {iv['name']} — {iv['qty']}x @ ${iv['cost_per']:,.0f} = ${iv['subtotal']:,.0f}")
+        misc_items = quote_data.get("misc_items", [])
+        if misc_items:
+            lines.append("")
+            lines.append("MISCELLANEOUS:")
+            for mi in misc_items:
+                sign = "+" if mi["amount"] >= 0 else "-"
+                lines.append(f"  {mi['desc']}: {sign}${abs(mi['amount']):,.0f}")
+        travel_cost = quote_data.get("travel_cost", 0)
+        if travel_cost > 0:
+            lines.append(f"Travel ({quote_data.get('travel_time', 0)} min): ${travel_cost:,.0f}")
+        lines.append("")
+        lines.append(f"TOTAL PM CONTRACT PRICE: ${quote_data.get('annual_pm_price', 0):,.0f}")
+        if quote_data.get("notes"):
+            lines.append(f"Notes: {quote_data['notes']}")
+
+        note_body = "\n".join(lines)
+
+        # Create a note engagement
+        note_payload = {
+            "properties": {
+                "hs_timestamp": str(int(datetime.now().timestamp() * 1000)),
+                "hs_note_body": note_body,
+            },
+            "associations": [
+                {
+                    "to": {"id": deal_id},
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 214}],
+                }
+            ],
+        }
+        requests.post(
+            "https://api.hubapi.com/crm/v3/objects/notes",
+            headers=headers, json=note_payload, timeout=15
+        )
+    except Exception:
+        pass  # Don't block quote save if note creation fails
+
 def _associate_deal_to_company(deal_id, customer_name, headers):
     """Associate a deal with a matching HubSpot company."""
     try:
@@ -4019,6 +4081,7 @@ with tab_leads:
                                         hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
                                         if hs_deal_id:
                                             pm_entry["hs_deal_id"] = hs_deal_id
+                                            _attach_quote_note_to_deal(hs_deal_id, q)
                                         st.success("Quote saved" if saved else "Saved locally (Sheets not connected)")
                                 with rc3:
                                     if st.button("Clear Quote", use_container_width=True, key=f"qclr_{cust_key}"):
@@ -4467,6 +4530,8 @@ with tab_calc:
                 }
                 save_pm_tracker_entry(pm_entry)
                 hs_deal_id = hubspot_create_or_update_pm_deal(pm_entry)
+                if hs_deal_id:
+                    _attach_quote_note_to_deal(hs_deal_id, q)
                 st.success("Quote saved" if saved else "Saved locally")
         with rc3:
             if st.button("Clear / New Quote", use_container_width=True, key="calc_clear"):
