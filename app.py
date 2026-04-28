@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import os
 import re
+import time as _time
 import html as html_module
 import base64
 import requests
@@ -43,6 +44,16 @@ REGIONS = {
 }
 
 ADMIN_PASSWORD = "SEpm2026"
+
+# ─── Performance Profiling ───
+_PERF_LOG = []  # list of (label, seconds)
+def _perf_start(label):
+    return (label, _time.time())
+def _perf_end(token):
+    label, t0 = token
+    elapsed = _time.time() - t0
+    _PERF_LOG.append((label, elapsed))
+    return elapsed
 
 # ─── PM Dealsheet Pricing (from PM Contract Dealsheet Rev 3.0) ───
 # Each model: {brand, cost_i, cost_1, cost_2, cost_3, cost_s, hr_i, hr_1, hr_2, hr_3, hr_s}
@@ -3602,25 +3613,39 @@ with tab_leads:
     st.caption("Research customers for PM contracts. Filter by segment, search by name, and use Quote or Log Activity on any card.")
 
     # ── Load all data sources ──
+    _t = _perf_start("load_bundled_alerts")
     alerts_df = load_bundled_alerts()
+    _perf_end(_t)
+    _t = _perf_start("load_bundled_procare")
     procare_vins = load_bundled_procare()
+    _perf_end(_t)
 
     # Score CASE alert leads (keeps existing scoring for data enrichment)
     scored = pd.DataFrame()
     if alerts_df is not None and not alerts_df.empty:
+        _t = _perf_start("score_leads")
         scored = score_leads(alerts_df, procare_vins)
+        _perf_end(_t)
 
     # HubSpot data
+    _t = _perf_start("fetch_hubspot_companies")
     hs_companies = fetch_hubspot_companies()
+    _perf_end(_t)
     deal_history, pm_active = {}, set()
     hs_only_leads = pd.DataFrame()
 
     if hs_companies:
+        _t = _perf_start("fetch_hubspot_deals")
         deal_history, pm_active = fetch_hubspot_deals()
+        _perf_end(_t)
         if not scored.empty:
+            _t = _perf_start("enrich_leads_with_hubspot")
             scored = enrich_leads_with_hubspot(scored, hs_companies, deal_history, pm_active)
+            _perf_end(_t)
         existing_customers = set(scored["Customer"].str.strip().str.upper()) if not scored.empty else set()
+        _t = _perf_start("build_hubspot_only_leads")
         hs_only_leads = build_hubspot_only_leads(hs_companies, deal_history, pm_active, existing_customers)
+        _perf_end(_t)
 
         # Only keep HubSpot customers who have done business with SEC
         if not hs_only_leads.empty:
@@ -3650,7 +3675,9 @@ with tab_leads:
             hs_only_leads = hs_only_leads[mask].copy()
 
     # Equipment report leads
+    _t = _perf_start("load_equipment_report")
     equip_df = load_equipment_report()
+    _perf_end(_t)
     equip_leads = pd.DataFrame()
     equip_branch_map = {}
     if not equip_df.empty:
@@ -3763,12 +3790,18 @@ with tab_leads:
     st.session_state.procare_vins = procare_vins
 
     # Load tracking data
+    _t = _perf_start("load_last_contacted")
     last_contacted = load_last_contacted()
+    _perf_end(_t)
+    _t = _perf_start("load_pm_tracker (Lead Discovery)")
     pm_tracker = load_pm_tracker()
+    _perf_end(_t)
     pm_alerts = []
     if not pm_tracker.empty:
         fleet_for_alerts = all_leads if not all_leads.empty else None
+        _t = _perf_start("check_pm_alerts (Lead Discovery)")
         pm_alerts = check_pm_alerts(pm_tracker, fleet_for_alerts)
+        _perf_end(_t)
     pm_alerts_by_customer = {}
     for a in pm_alerts:
         cust = a.get("customer", "").upper()
@@ -4278,7 +4311,9 @@ with tab_tracker:
     st.markdown("### PM Tracker")
     st.caption("Central hub for all PM deals. Every quote, call, and status update lives here.")
 
+    _t = _perf_start("load_pm_tracker (PM Tracker tab)")
     tracker_df = load_pm_tracker()
+    _perf_end(_t)
 
     if tracker_df.empty:
         st.info("No PM deals tracked yet. Use Lead Discovery or PM Calculator to create quotes, and they will appear here.")
@@ -4289,7 +4324,9 @@ with tab_tracker:
                 tracker_df[nc] = pd.to_numeric(tracker_df[nc], errors="coerce").fillna(0)
 
         # Run alert check against this tracker data
+        _t = _perf_start("check_pm_alerts (PM Tracker tab)")
         tracker_alerts = check_pm_alerts(tracker_df, st.session_state.get("leads_df"))
+        _perf_end(_t)
         tracker_alerts_by_cust = {}
         for ta in tracker_alerts:
             key = (ta.get("customer", "").upper(), ta.get("model", "").upper())
@@ -4770,6 +4807,26 @@ with tab_history:
                     fig.update_layout(showlegend=False, xaxis_tickangle=-45)
                     st.plotly_chart(fig, use_container_width=True)
 
+
+# ═══════════════════════════════════════════════════════════
+# PERFORMANCE PROFILING SIDEBAR (admin only)
+# ═══════════════════════════════════════════════════════════
+if _PERF_LOG and st.session_state.get("page") != "admin":
+    with st.sidebar:
+        with st.expander("Performance (debug)", expanded=False):
+            total_time = sum(t for _, t in _PERF_LOG)
+            st.caption(f"Total tracked: **{total_time:.1f}s**")
+            for label, elapsed in sorted(_PERF_LOG, key=lambda x: -x[1]):
+                bar_pct = min(elapsed / max(total_time, 0.01) * 100, 100)
+                color = "#C8102E" if elapsed > 2.0 else "#F59E0B" if elapsed > 0.5 else "#10B981"
+                st.markdown(
+                    f'<div style="font-size:11px;margin-bottom:4px;">'
+                    f'<span style="color:{color};font-weight:600;">{elapsed:.2f}s</span> {label}'
+                    f'<div style="background:#E5E7EB;border-radius:3px;height:4px;margin-top:2px;">'
+                    f'<div style="background:{color};width:{bar_pct:.0f}%;height:4px;border-radius:3px;"></div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
 
 # ═══════════════════════════════════════════════════════════
 # TAB 4: PRICING REFERENCE
