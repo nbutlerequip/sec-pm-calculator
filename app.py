@@ -93,8 +93,12 @@ PM_DEALSHEET = {
     "221F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
     "321F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
     "421F": {"brand":"Case","cost_i":758,"cost_1":0,"cost_2":1080,"cost_3":2820,"cost_s":3625,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
-    "621G": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":1250,"cost_3":2813,"cost_s":4973,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
-    "721G": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":1269,"cost_3":2877,"cost_s":5080,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
+    # G-Series Wheel Loaders (from Jarred's Case_G_Series_PM_Price_Book)
+    # 4-tier superseding chain: 500→1000→2000→4000. 1500hr transmission svc is independent (add as misc).
+    "621G": {"brand":"Case","cost_i":0,"cost_1":1176,"cost_2":2549,"cost_3":3540,"cost_s":5243,"hr_i":0,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":4000},
+    "721G": {"brand":"Case","cost_i":0,"cost_1":1176,"cost_2":2714,"cost_3":3705,"cost_s":5507,"hr_i":0,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":4000},
+    "821G": {"brand":"Case","cost_i":0,"cost_1":1221,"cost_2":2921,"cost_3":3913,"cost_s":5723,"hr_i":0,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":4000},
+    "921G": {"brand":"Case","cost_i":0,"cost_1":1221,"cost_2":2977,"cost_3":4014,"cost_s":6025,"hr_i":0,"hr_1":500,"hr_2":1000,"hr_3":2000,"hr_s":4000},
     # === KOBELCO (19 models) ===
     "SK17SR-6E": {"brand":"Kobelco","cost_i":885,"cost_1":0,"cost_2":930,"cost_3":1260,"cost_s":0,"hr_i":250,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
     "SK26SR-7": {"brand":"Kobelco","cost_i":745,"cost_1":0,"cost_2":700,"cost_3":1070,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
