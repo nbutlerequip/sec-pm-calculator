@@ -2503,6 +2503,114 @@ def show_admin_dashboard():
     else:
         st.info("No tracking data yet. Activity will appear here once branches start logging.")
 
+    # ── Rep Leaderboard ──
+    _active_stages = ["Lead Identified", "Called", "Quoted", "In Progress"]
+    if not pm_tracker_df.empty and "Rep" in pm_tracker_df.columns:
+        st.markdown("---")
+        st.markdown("### Rep Leaderboard")
+        rep_groups = pm_tracker_df.groupby("Rep")
+        rep_rows = []
+        for rname, rdf in rep_groups:
+            if not str(rname).strip():
+                continue
+            r_total = len(rdf)
+            r_sold = rdf[rdf["Status"].str.strip().str.lower() == "sold"] if "Status" in rdf.columns else pd.DataFrame()
+            r_active = rdf[rdf["Status"].str.strip().isin(_active_stages)] if "Status" in rdf.columns else pd.DataFrame()
+            r_sold_val = r_sold["Contract Value"].sum() if not r_sold.empty else 0
+            r_active_val = r_active["Contract Value"].sum() if not r_active.empty else 0
+            r_wr = f"{(len(r_sold) / r_total * 100):.0f}%" if r_total > 0 else "0%"
+            rep_rows.append({
+                "Rep": str(rname).strip(),
+                "Total Deals": r_total,
+                "Active": len(r_active),
+                "Sold": len(r_sold),
+                "Pipeline $": f"${r_active_val:,.0f}",
+                "Sold $": f"${r_sold_val:,.0f}",
+                "Win Rate": r_wr,
+            })
+        if rep_rows:
+            rep_lb = pd.DataFrame(rep_rows).sort_values("Sold", ascending=False)
+            st.dataframe(rep_lb, use_container_width=True, hide_index=True)
+
+            # Rep bar chart
+            rep_chart_df = pd.DataFrame(rep_rows)
+            rep_chart_df["Sold $"] = rep_chart_df["Sold $"].str.replace("[$,]", "", regex=True).astype(float)
+            rep_chart_df["Pipeline $"] = rep_chart_df["Pipeline $"].str.replace("[$,]", "", regex=True).astype(float)
+            if len(rep_chart_df) > 1:
+                fig = px.bar(rep_chart_df, x="Rep", y=["Sold $", "Pipeline $"],
+                             title="Rep Revenue: Sold vs Active Pipeline", barmode="group",
+                             color_discrete_sequence=["#10B981", SEC_RED])
+                fig.update_layout(height=320, legend_title="")
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ── Deal Aging ──
+    if not pm_tracker_df.empty and "Date" in pm_tracker_df.columns and "Status" in pm_tracker_df.columns:
+        st.markdown("---")
+        st.markdown("### Deal Aging")
+        st.caption("How long deals have been sitting in each stage — spot stale opportunities.")
+        aging_df = pm_tracker_df.copy()
+        aging_df["Created"] = pd.to_datetime(aging_df["Date"], errors="coerce")
+        aging_df["Days Open"] = (pd.Timestamp.now() - aging_df["Created"]).dt.days
+        aging_df["Days Open"] = aging_df["Days Open"].fillna(0).astype(int)
+
+        # Only show non-closed deals
+        aging_active = aging_df[aging_df["Status"].str.strip().isin(_active_stages)].copy()
+        if not aging_active.empty:
+            # Average age by stage
+            stage_age = aging_active.groupby("Status")["Days Open"].agg(["mean", "count", "max"]).reset_index()
+            stage_age.columns = ["Stage", "Avg Days", "Deals", "Max Days"]
+            stage_age["Avg Days"] = stage_age["Avg Days"].round(0).astype(int)
+            st.dataframe(stage_age.sort_values("Avg Days", ascending=False), use_container_width=True, hide_index=True)
+
+            # Flag stale deals (>30 days in same stage)
+            stale = aging_active[aging_active["Days Open"] > 30]
+            if not stale.empty:
+                st.warning(f"{len(stale)} deal(s) older than 30 days:")
+                stale_display = stale[["Customer", "Model", "Status", "Branch", "Rep", "Days Open", "Contract Value"]].sort_values("Days Open", ascending=False)
+                st.dataframe(stale_display, use_container_width=True, hide_index=True)
+        else:
+            st.info("No active deals to analyze for aging.")
+
+    # ── Pipeline Forecast ──
+    if not pm_tracker_df.empty and "Status" in pm_tracker_df.columns and "Contract Value" in pm_tracker_df.columns:
+        st.markdown("---")
+        st.markdown("### Pipeline Forecast")
+        st.caption("Weighted revenue projection based on deal stage probability.")
+        stage_weights = {
+            "Lead Identified": 0.10,
+            "Called": 0.20,
+            "Quoted": 0.40,
+            "In Progress": 0.70,
+            "Sold": 1.00,
+        }
+        forecast_rows = []
+        for stage, weight in stage_weights.items():
+            sdf = pm_tracker_df[pm_tracker_df["Status"].str.strip() == stage]
+            if sdf.empty:
+                continue
+            raw_val = sdf["Contract Value"].sum()
+            weighted_val = raw_val * weight
+            forecast_rows.append({
+                "Stage": stage,
+                "Deals": len(sdf),
+                "Total Value": f"${raw_val:,.0f}",
+                "Weight": f"{weight:.0%}",
+                "Weighted Value": f"${weighted_val:,.0f}",
+            })
+        if forecast_rows:
+            forecast_df = pd.DataFrame(forecast_rows)
+            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+            total_weighted = sum(
+                pm_tracker_df[pm_tracker_df["Status"].str.strip() == s]["Contract Value"].sum() * w
+                for s, w in stage_weights.items()
+            )
+            total_raw = pm_tracker_df[pm_tracker_df["Status"].str.strip().isin(stage_weights.keys())]["Contract Value"].sum()
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                st.metric("Total Pipeline (Unweighted)", f"${total_raw:,.0f}")
+            with fc2:
+                st.metric("Weighted Forecast", f"${total_weighted:,.0f}")
+
     # Quote history from main sheet
     st.markdown("---")
     st.markdown("### Recent Quotes (All Branches)")
