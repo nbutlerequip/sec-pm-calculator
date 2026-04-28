@@ -93,6 +93,8 @@ PM_DEALSHEET = {
     "221F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
     "321F": {"brand":"Case","cost_i":638,"cost_1":0,"cost_2":1062,"cost_3":2620,"cost_s":2970,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
     "421F": {"brand":"Case","cost_i":758,"cost_1":0,"cost_2":1080,"cost_3":2820,"cost_s":3625,"hr_i":150,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":1500},
+    "621G": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":1250,"cost_3":2813,"cost_s":4973,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
+    "721G": {"brand":"Case","cost_i":0,"cost_1":0,"cost_2":1269,"cost_3":2877,"cost_s":5080,"hr_i":0,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":2000},
     # === KOBELCO (19 models) ===
     "SK17SR-6E": {"brand":"Kobelco","cost_i":885,"cost_1":0,"cost_2":930,"cost_3":1260,"cost_s":0,"hr_i":250,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
     "SK26SR-7": {"brand":"Kobelco","cost_i":745,"cost_1":0,"cost_2":700,"cost_3":1070,"cost_s":0,"hr_i":50,"hr_1":0,"hr_2":500,"hr_3":1000,"hr_s":0},
