@@ -2052,27 +2052,51 @@ def get_models_for_brand(brand):
     """Get sorted model list for a brand from the dealsheet."""
     return sorted(PM_BRANDS.get(brand, []))
 
-def calculate_pm_cost(model_key, hours_requested):
+def calculate_pm_cost(model_key, hours_requested, current_hours=0):
     """Calculate PM contract cost using real dealsheet interval pricing.
+    If current_hours > 0, the contract window is current_hours to the next
+    hours_requested milestone above current_hours (e.g. 4900 hrs + 1000 req = 4900-5000).
     Returns breakdown of each service interval, quantities, and total.
     """
     ds = PM_DEALSHEET.get(model_key)
     if not ds:
         return None
 
-    # Build sets of hour marks for each service tier
-    hr_i_marks = {ds["hr_i"]} if ds["hr_i"] and ds["cost_i"] else set()
-    hr_1_marks = set(range(ds["hr_1"], hours_requested + 1, ds["hr_1"])) if ds["hr_1"] and ds["cost_1"] else set()
-    hr_2_marks = set(range(ds["hr_2"], hours_requested + 1, ds["hr_2"])) if ds["hr_2"] and ds["cost_2"] else set()
-    hr_3_marks = set(range(ds["hr_3"], hours_requested + 1, ds["hr_3"])) if ds["hr_3"] and ds["cost_3"] else set()
-    hr_s_marks = set(range(ds["hr_s"], hours_requested + 1, ds["hr_s"])) if ds["hr_s"] and ds["cost_s"] else set()
+    # Determine the contract end point
+    if current_hours > 0:
+        # Next milestone: round up to next multiple of hours_requested
+        import math
+        end_hours = math.ceil(current_hours / hours_requested) * hours_requested
+        if end_hours <= current_hours:
+            end_hours += hours_requested
+        start_hours = current_hours
+    else:
+        start_hours = 0
+        end_hours = hours_requested
+
+    # Build sets of hour marks for each service tier (up to end_hours)
+    # Initial only fires once (at hr_i) and only if it's within the window
+    hr_i_marks = {ds["hr_i"]} if ds["hr_i"] and ds["cost_i"] and start_hours < ds["hr_i"] <= end_hours else set()
+    hr_1_marks = set(range(ds["hr_1"], end_hours + 1, ds["hr_1"])) if ds["hr_1"] and ds["cost_1"] else set()
+    hr_2_marks = set(range(ds["hr_2"], end_hours + 1, ds["hr_2"])) if ds["hr_2"] and ds["cost_2"] else set()
+    hr_3_marks = set(range(ds["hr_3"], end_hours + 1, ds["hr_3"])) if ds["hr_3"] and ds["cost_3"] else set()
+    hr_s_marks = set(range(ds["hr_s"], end_hours + 1, ds["hr_s"])) if ds["hr_s"] and ds["cost_s"] else set()
+
+    # Filter to only marks within the contract window (start_hours, end_hours]
+    if start_hours > 0:
+        hr_1_marks = {m for m in hr_1_marks if m > start_hours}
+        hr_2_marks = {m for m in hr_2_marks if m > start_hours}
+        hr_3_marks = {m for m in hr_3_marks if m > start_hours}
+        hr_s_marks = {m for m in hr_s_marks if m > start_hours}
 
     # Net marks: each tier only applies when NOT superseded by a higher tier
-    net_1_marks = hr_1_marks - hr_2_marks
-    net_2_marks = hr_2_marks - hr_3_marks
+    # Specialty supersedes i3, i3 supersedes i2, i2 supersedes i1
+    net_1_marks = hr_1_marks - hr_2_marks - hr_3_marks - hr_s_marks
+    net_2_marks = hr_2_marks - hr_3_marks - hr_s_marks
+    net_3_marks = hr_3_marks - hr_s_marks
 
     # Collect all unique hour marks where any service happens
-    all_marks = sorted(hr_i_marks | net_1_marks | net_2_marks | hr_3_marks | hr_s_marks)
+    all_marks = sorted(hr_i_marks | net_1_marks | net_2_marks | net_3_marks | hr_s_marks)
 
     schedule = []
     total = 0
@@ -2088,7 +2112,7 @@ def calculate_pm_cost(model_key, hours_requested):
         if mark in net_2_marks:
             services.append(f"{ds['hr_2']}hr Service")
             cost += ds["cost_2"]
-        if mark in hr_3_marks:
+        if mark in net_3_marks:
             services.append(f"{ds['hr_3']}hr Service")
             cost += ds["cost_3"]
         if mark in hr_s_marks:
@@ -2112,8 +2136,8 @@ def calculate_pm_cost(model_key, hours_requested):
     if ds["hr_2"] and ds["cost_2"] and net_2_marks:
         n = len(net_2_marks)
         intervals.append({"name": f"Interval 2 ({ds['hr_2']}hr)", "hours": ds["hr_2"], "qty": n, "cost_per": ds["cost_2"], "subtotal": n * ds["cost_2"]})
-    if ds["hr_3"] and ds["cost_3"] and hr_3_marks:
-        n = len(hr_3_marks)
+    if ds["hr_3"] and ds["cost_3"] and net_3_marks:
+        n = len(net_3_marks)
         intervals.append({"name": f"Interval 3 ({ds['hr_3']}hr)", "hours": ds["hr_3"], "qty": n, "cost_per": ds["cost_3"], "subtotal": n * ds["cost_3"]})
     if ds["hr_s"] and ds["cost_s"] and hr_s_marks:
         n = len(hr_s_marks)
@@ -2892,7 +2916,7 @@ def _attach_quote_note_to_deal(deal_id, quote_data):
                 lines.append(f"  {mi['desc']}: {sign}${abs(mi['amount']):,.0f}")
         travel_cost = quote_data.get("travel_cost", 0)
         if travel_cost > 0:
-            lines.append(f"Travel ({quote_data.get('travel_time', 0)} min): ${travel_cost:,.0f}")
+            lines.append(f"Travel ({quote_data.get('travel_time', 0)} mi): ${travel_cost:,.0f}")
         lines.append("")
         lines.append(f"TOTAL PM CONTRACT PRICE: ${quote_data.get('annual_pm_price', 0):,.0f}")
         if quote_data.get("notes"):
@@ -3947,7 +3971,7 @@ with tab_leads:
                             with qc1:
                                 q_service = st.selectbox("Field or Shop", SERVICE_TYPES, key=f"qs_{cust_key}")
                             with qc2:
-                                q_travel = st.number_input("Travel (min, one way)", min_value=0, max_value=480, value=0, step=15, key=f"qtr_{cust_key}")
+                                q_travel = st.number_input("Travel (miles, one way)", min_value=0, max_value=500, value=0, step=5, key=f"qtr_{cust_key}")
                             qc1, qc2 = st.columns(2)
                             with qc1:
                                 q_make = st.selectbox("Make", [""] + sorted(PM_BRANDS.keys()), key=f"qm_{cust_key}")
@@ -3969,9 +3993,13 @@ with tab_leads:
 
                             can_calc = bool(q_make and q_model and q_model in PM_DEALSHEET)
                             if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not can_calc, key=f"qcalc_{cust_key}"):
-                                result = calculate_pm_cost(q_model, q_hours)
+                                result = calculate_pm_cost(q_model, q_hours, current_hours=q_machine_hrs)
                                 if result:
-                                    travel_cost = round((q_travel / 60) * 225 * 2, 2) if q_service == "Field" and q_travel > 0 else 0
+                                    # Travel tiers: free ≤10mi, $300 flat 10-60mi, $300+$5/mi over 60mi
+                                    if q_service == "Field" and q_travel > 10:
+                                        travel_cost = 300 + max(0, (q_travel - 60) * 5) if q_travel > 60 else 300.0
+                                    else:
+                                        travel_cost = 0.0
                                     st.session_state[f"quote_{cust_key}"] = {
                                         "date": datetime.now().strftime("%m/%d/%Y"),
                                         "customer_name": cust_name, "branch": st.session_state.get("branch_name", ""),
@@ -4052,11 +4080,14 @@ with tab_leads:
                                             st.rerun()
                                     q_misc_total += mi["amount"]
 
+                                # Store only included stops so PDF and save use the filtered list
+                                q["schedule"] = included_stops if sched else []
                                 t_cost = q.get("travel_cost", 0)
                                 if t_cost > 0:
                                     st.markdown(f"**Travel:** ${t_cost:,.0f}")
                                 q_final = q_adjusted + t_cost + q_misc_total
                                 q["annual_pm_price"] = q_final
+                                q["total_cost"] = q_adjusted
                                 q["misc_items"] = st.session_state[misc_key].copy()
                                 st.markdown(f'<div style="background:white;border:1px solid #E5E7EB;border-radius:8px;padding:14px;text-align:center;border-top:3px solid #C8102E;margin-top:8px;"><div style="font-size:12px;color:#6B7280;text-transform:uppercase;">Total PM Contract Price ({q.get("hours_requested",0):,} hrs)</div><div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${q_final:,.0f}</div></div>', unsafe_allow_html=True)
 
@@ -4377,7 +4408,7 @@ with tab_calc:
     with cc1:
         calc_service = st.selectbox("Field or Shop", SERVICE_TYPES, key="calc_svc")
     with cc2:
-        calc_travel = st.number_input("Travel Time (minutes, one way)", min_value=0, max_value=480, value=0, step=15, key="calc_travel")
+        calc_travel = st.number_input("Travel (miles, one way)", min_value=0, max_value=500, value=0, step=5, key="calc_travel")
 
     st.divider()
     st.subheader("Machine Info")
@@ -4406,9 +4437,13 @@ with tab_calc:
     calc_can_calc = bool(calc_make and calc_model and calc_model in PM_DEALSHEET)
 
     if st.button("Calculate PM Price", type="primary", use_container_width=True, disabled=not calc_can_calc, key="calc_btn"):
-        result = calculate_pm_cost(calc_model, calc_hours)
+        result = calculate_pm_cost(calc_model, calc_hours, current_hours=calc_machine_hrs)
         if result:
-            calc_travel_cost = round((calc_travel / 60) * 225 * 2, 2) if calc_service == "Field" and calc_travel > 0 else 0
+            # Travel tiers: free ≤10mi, $300 flat 10-60mi, $300+$5/mi over 60mi
+            if calc_service == "Field" and calc_travel > 10:
+                calc_travel_cost = 300 + max(0, (calc_travel - 60) * 5) if calc_travel > 60 else 300.0
+            else:
+                calc_travel_cost = 0.0
             st.session_state.current_quote = {
                 "date": datetime.now().strftime("%m/%d/%Y"),
                 "customer_name": calc_customer, "branch": calc_branch, "rep": calc_rep,
@@ -4501,8 +4536,10 @@ with tab_calc:
             f'<div style="font-size:24px;font-weight:700;color:#C8102E;margin-top:4px;">${final_price:,.0f}</div>'
             f'</div>', unsafe_allow_html=True)
 
-        # Update the quote with adjusted price for saving/PDF
+        # Update the quote with adjusted price and only included stops for saving/PDF
+        q["schedule"] = included_stops if sched else []
         q["annual_pm_price"] = final_price
+        q["total_cost"] = adjusted_total
         q["misc_items"] = st.session_state.misc_items.copy()
 
         rc1, rc2, rc3 = st.columns(3)
@@ -4560,7 +4597,7 @@ with tab_history:
             "model": "Model",
             "serial": "Serial",
             "hours_requested": "Hours Requested",
-            "travel_time": "Travel Time",
+            "travel_time": "Travel Miles",
             "travel_cost": "Travel Cost",
             "total_cost": "Total Cost",
             "annual_pm_price": "PM Contract Price",
