@@ -2852,62 +2852,33 @@ def delete_pm_tracker_row(row_index):
 
 
 # ═══════════════════════════════════════════════════════════
-# HUBSPOT PM PIPELINE (dedicated pipeline, separate from sales)
+# HUBSPOT PM CONTRACTS PIPELINE (shared with HubSpot dashboard)
 # ═══════════════════════════════════════════════════════════
-PM_PIPELINE_LABEL = "PM Service Pipeline"
+PM_PIPELINE_ID = "894132043"
+PM_PIPELINE_STAGES = {
+    "Discovery":     "1349305386",
+    "Qualification": "1349305414",
+    "Outreach":      "1349305387",
+    "Quote Sent":    "1349305415",
+    "Negotiation":   "1349305388",
+    "Closed Won":    "1349305389",
+    "Closed Lost":   "1349305390",
+}
 
-@st.cache_data(ttl=3600)
+# Map PM Tracker statuses → PM Contracts pipeline stages
+PM_STATUS_TO_STAGE = {
+    "Called":          "Outreach",
+    "Quoted":          "Quote Sent",
+    "In Progress":     "Negotiation",
+    "Sold":            "Closed Won",
+    "Not Interested":  "Closed Lost",
+    "Lead Identified": "Discovery",
+}
+
 def get_or_create_pm_pipeline():
-    """Get or create a dedicated PM Service pipeline in HubSpot.
-    Returns (pipeline_id, stage_map) or (None, None)."""
-    if not HUBSPOT_TOKEN:
-        return None, None
-    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
-
-    # Define our PM-specific stages
-    pm_stages = [
-        {"label": "Lead Identified", "displayOrder": 0},
-        {"label": "Called", "displayOrder": 1},
-        {"label": "Quoted", "displayOrder": 2},
-        {"label": "In Progress", "displayOrder": 3},
-        {"label": "Sold", "displayOrder": 4, "metadata": {"isClosed": "true", "probability": "1.0"}},
-        {"label": "Not Interested", "displayOrder": 5, "metadata": {"isClosed": "true", "probability": "0.0"}},
-    ]
-
-    try:
-        # Check if PM pipeline already exists
-        resp = requests.get(
-            "https://api.hubapi.com/crm/v3/pipelines/deals",
-            headers=headers, timeout=15
-        )
-        if resp.status_code == 200:
-            for p in resp.json().get("results", []):
-                if p.get("label") == PM_PIPELINE_LABEL:
-                    # Found it, build stage map from existing stages
-                    stage_map = {}
-                    for s in p.get("stages", []):
-                        stage_map[s["label"]] = s["id"]
-                    return p["id"], stage_map
-
-        # Pipeline doesn't exist, create it
-        create_payload = {
-            "label": PM_PIPELINE_LABEL,
-            "displayOrder": 10,
-            "stages": pm_stages,
-        }
-        resp = requests.post(
-            "https://api.hubapi.com/crm/v3/pipelines/deals",
-            headers=headers, json=create_payload, timeout=15
-        )
-        if resp.status_code == 201:
-            pipeline = resp.json()
-            stage_map = {}
-            for s in pipeline.get("stages", []):
-                stage_map[s["label"]] = s["id"]
-            return pipeline["id"], stage_map
-    except Exception:
-        pass
-    return None, None
+    """Return the PM Contracts pipeline ID and stage map.
+    Uses the pre-existing PM Contracts pipeline in HubSpot (no API call needed)."""
+    return PM_PIPELINE_ID, PM_PIPELINE_STAGES
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2959,9 +2930,10 @@ def hubspot_create_or_update_pm_deal(deal_data):
         except Exception:
             pass  # If search fails, just create a new deal
 
-        # Map status to our PM pipeline stages
+        # Map PM Tracker status → PM Contracts pipeline stage
         status = deal_data.get("status", "Quoted")
-        deal_stage = stage_map.get(status, stage_map.get("Quoted", ""))
+        pipeline_stage_name = PM_STATUS_TO_STAGE.get(status, "Quote Sent")
+        deal_stage = stage_map.get(pipeline_stage_name, stage_map.get("Quote Sent", ""))
 
         properties = {
             "dealname": deal_name,
